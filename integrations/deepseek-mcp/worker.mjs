@@ -500,6 +500,11 @@ export async function runWorker(request, options = {}) {
     });
     return parseEvents(output, request.workspaceRoot);
   } finally {
-    await fs.rm(runtimeRoot, { recursive: true, force: true });
+    await fs.rm(runtimeRoot, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 100,
+    });
   }
 }
