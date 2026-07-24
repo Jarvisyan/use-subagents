@@ -31,6 +31,8 @@ The Chair retains the user goal, inspects the project, runs checks, adjudicates 
 
 Stop when no new evidence appears and never exceed three rounds. The Chair decides by evidence, not votes. Escalate an unresolved high-impact dispute to the user with the decision, options, evidence, consequences, and recommendation.
 
+Treat `finish_reason: "length"` or `truncated: true` as incomplete evidence. Retry the same request from scratch at the next output tier (`8K -> 32K -> 128K`); if it still truncates, split the question or escalate to the user. Never adjudicate from partial output or automatically use the provider's maximum output limit.
+
 ## Plan
 
 Inspect the project first. For clear, reversible, mechanically verifiable work, the Chair makes a concise plan alone.

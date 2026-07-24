@@ -18,6 +18,8 @@ DeepSeek 官方支持把 V4 Pro 接入 OpenCode 等 coding agent。本项目固�
 
 `ask_deepseek` 的普通 `high` 调用默认允许 8K 输出，`max` 调用默认允许 32K；调用者可以显式提高到 DeepSeek V4 Pro 官方的 384K 上限。桥接会返回 `finish_reason` 和 `truncated`，避免长度耗尽时把半截回答误认为完整结果。
 
+调用方必须把截断响应视为不完整证据，并从头按 `8K -> 32K -> 128K` 提高预算重试；若仍然截断，应拆分任务或请求用户裁决，不能直接使用部分输出作出结论。
+
 ## 安全边界
 
 Worker 只允许 `read/edit/glob/grep/list` 等工作区文件工具，并明确禁止：
