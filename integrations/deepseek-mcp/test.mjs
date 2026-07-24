@@ -352,7 +352,18 @@ async function run() {
   });
   assert.equal(maxEffortDefault.result.isError, false);
   assert.equal(mock.requests[1].body.reasoning_effort, "max");
-  assert.equal(mock.requests[1].body.max_tokens, 32768);
+  assert.equal(mock.requests[1].body.max_tokens, 384000);
+
+  const highEffortDefault = await client.request("tools/call", {
+    name: "ask_deepseek",
+    arguments: {
+      prompt: "Use the high-effort default",
+      reasoning_effort: "high",
+    },
+  });
+  assert.equal(highEffortDefault.result.isError, false);
+  assert.equal(mock.requests[2].body.reasoning_effort, "high");
+  assert.equal(mock.requests[2].body.max_tokens, 384000);
 
   const truncatedCall = await client.request("tools/call", {
     name: "ask_deepseek",
@@ -365,7 +376,7 @@ async function run() {
   assert.equal(truncatedCall.result.structuredContent.finish_reason, "length");
   assert.equal(truncatedCall.result.structuredContent.truncated, true);
   assert.match(truncatedCall.result.content[0].text, /TRUNCATED/);
-  assert.equal(mock.requests[2].body.max_tokens, 384000);
+  assert.equal(mock.requests[3].body.max_tokens, 384000);
 
   const rejectedArgument = await client.request("tools/call", {
     name: "ask_deepseek",
@@ -376,7 +387,7 @@ async function run() {
     rejectedArgument.result.content[0].text,
     /unsupported fields/,
   );
-  assert.equal(mock.requests.length, 3);
+  assert.equal(mock.requests.length, 4);
 
   const secretRole = "invalid-role-with-secret-material";
   const rejectedRole = await client.request("tools/call", {
@@ -388,7 +399,7 @@ async function run() {
     rejectedRole.result.content[0].text,
     new RegExp(secretRole),
   );
-  assert.equal(mock.requests.length, 3);
+  assert.equal(mock.requests.length, 4);
 
   const providerError = await client.request("tools/call", {
     name: "ask_deepseek",

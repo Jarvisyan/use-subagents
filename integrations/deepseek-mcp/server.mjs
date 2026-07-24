@@ -7,7 +7,7 @@ import {
 } from "./worker.mjs";
 
 const SERVER_NAME = "deepseek-bridge";
-const SERVER_VERSION = "0.2.0";
+const SERVER_VERSION = "0.3.0";
 const DEFAULT_BASE_URL = "https://api.deepseek.com";
 const DEFAULT_MODEL = "deepseek-v4-pro";
 const MAX_CONCURRENT_REQUESTS = 2;
@@ -16,8 +16,7 @@ const MAX_RPC_LINE_BYTES = 256 * 1024;
 const MAX_INPUT_BYTES = 160 * 1024;
 const MAX_PROVIDER_RESPONSE_BYTES = 8 * 1024 * 1024;
 const MAX_OUTPUT_TOKENS = 384000;
-const DEFAULT_HIGH_OUTPUT_TOKENS = 8192;
-const DEFAULT_MAX_OUTPUT_TOKENS = 32768;
+const DEFAULT_OUTPUT_TOKENS = MAX_OUTPUT_TOKENS;
 const ALLOWED_MODELS = new Set([DEFAULT_MODEL]);
 const ALLOWED_ROLES = new Set([
   "planner",
@@ -63,7 +62,7 @@ const TOOL = {
         minimum: 1,
         maximum: MAX_OUTPUT_TOKENS,
         description:
-          "Optional output budget. Defaults to 8,192 for high effort and 32,768 for max effort; explicit requests may use the provider maximum of 384,000.",
+          "Optional hard output ceiling. Defaults to the provider maximum of 384,000; reasoning effort controls thinking depth separately.",
       },
     },
   },
@@ -233,11 +232,7 @@ function validateArguments(value) {
   const context = value.context ?? "";
   const role = value.role ?? "challenger";
   const reasoningEffort = value.reasoning_effort ?? "high";
-  const maxTokens =
-    value.max_tokens ??
-    (reasoningEffort === "max"
-      ? DEFAULT_MAX_OUTPUT_TOKENS
-      : DEFAULT_HIGH_OUTPUT_TOKENS);
+  const maxTokens = value.max_tokens ?? DEFAULT_OUTPUT_TOKENS;
 
   if (typeof prompt !== "string" || prompt.trim().length === 0) {
     throw new Error("prompt must be a non-empty string.");
@@ -669,7 +664,7 @@ async function handle(message) {
         ? `\n\nUsage: ${JSON.stringify(response.usage)}`
         : "";
       const truncation = response.truncated
-        ? "\n\n[TRUNCATED: DeepSeek reached max_tokens. Request continuation or retry with a larger output budget.]"
+        ? "\n\n[TRUNCATED: DeepSeek reached the requested output ceiling. Do not adjudicate from this partial answer; split the task.]"
         : "";
       result(id, {
         content: [
