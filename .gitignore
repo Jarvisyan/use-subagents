@@ -16,3 +16,9 @@
 
 # Third-party repositories are local research inputs, not project dependencies.
 /references/local/
+
+# Pinned runtime dependencies are restored from package-lock.json.
+/integrations/deepseek-worker/node_modules/
+
+# Local documentation/tool caches
+/.tmp/
