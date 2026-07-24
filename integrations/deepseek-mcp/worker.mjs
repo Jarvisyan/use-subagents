@@ -54,6 +54,10 @@ function workerBinary() {
   );
 }
 
+function runtimeTempDirectory() {
+  return process.platform === "win32" ? os.tmpdir() : "/tmp";
+}
+
 function isInside(root, candidate) {
   const relative = path.relative(root, candidate);
   return (
@@ -415,7 +419,9 @@ export async function runWorker(request, options = {}) {
   const binary = options.binary ?? workerBinary();
   const argsPrefix = options.argsPrefix ?? [];
   await fs.access(binary);
-  const runtimeRoot = await fs.mkdtemp(path.join(os.tmpdir(), "deepseek-worker-"));
+  const runtimeRoot = await fs.mkdtemp(
+    path.join(runtimeTempDirectory(), "deepseek-worker-"),
+  );
   const controller = options.controller;
 
   try {
