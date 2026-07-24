@@ -1,0 +1,15 @@
+# Secrets and machine-local configuration
+.env
+.env.*
+!.env.example
+*.local.*
+
+# Private design source; README contains the sanitized motivation
+/chats.md.txt
+/private/
+
+# Real JARVIS runs stay local. Curated public cases belong in examples/.
+/.jarvis/missions/
+/.jarvis/cache/
+/.jarvis/logs/
+/.jarvis/worktrees/
