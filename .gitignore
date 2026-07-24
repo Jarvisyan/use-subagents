@@ -13,3 +13,6 @@
 /.jarvis/cache/
 /.jarvis/logs/
 /.jarvis/worktrees/
+
+# Third-party repositories are local research inputs, not project dependencies.
+/references/local/
