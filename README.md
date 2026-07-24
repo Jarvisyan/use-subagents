@@ -1,6 +1,6 @@
 # JARVIS
 
-> **Job-aware Agent Routing, Verification & Iteration System**  
+> **Job-aware Agent Routing, Verification & Iteration System**
 > 一套面向深度项目的多 Agent 组织、验证与动态用人框架。
 
 JARVIS 目前处于设计与试点阶段。目标是在 GitHub 上开源，让朋友和其他开发者能够从一个干净仓库理解、运行、验证并扩展它，而不是得到一堆私人聊天、临时日志和不可复现的 Prompt。
@@ -80,7 +80,7 @@ flowchart LR
 5. **人在高杠杆节点介入。** 删除、发布、付费、外发数据和未解决的高风险分歧必须升级。
 6. **流程有界。** 重规划、修复和模型质询都有回合、时间和成本上限。
 
-完整的角色责任、Mission 状态机、风险分级和协议见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
+完整的角色责任、Mission 状态机、风险分级和协议见 [`docs/archive/2026-07-24-initial-design/ARCHITECTURE.md`](docs/archive/2026-07-24-initial-design/ARCHITECTURE.md)。
 
 ## Hall of Armor：动态用人与淘汰
 
@@ -105,7 +105,7 @@ Candidate → Probation → Active → Preferred
 
 路由首先检查能力、权限、隐私、许可证和质量硬门槛；只有合格候选才比较返工后的总成本、延迟和人工介入。低价格不能抵消低质量。新战衣先做只给建议的 Routing Shadow，或在隔离环境执行 Evaluation Shadow/可回滚任务；安全与诚信事故直接停职。
 
-详细的指标、EWMA 权重、探索比例和晋退规则见[动态用人与淘汰设计](docs/ARCHITECTURE.md#6-armor-qualification动态权重与淘汰)。
+详细的指标、EWMA 权重、探索比例和晋退规则见[动态用人与淘汰设计](docs/archive/2026-07-24-initial-design/ARCHITECTURE.md#6-armor-qualification动态权重与淘汰)。
 
 ## 当前试点编制
 
@@ -114,15 +114,17 @@ Candidate → Probation → Active → Preferred
 | 组织标签 | P1 实例 |
 |---|---|
 | JARVIS：Orchestrator | GPT-5.6 Sol，High |
-| MARK-P：Planner | GPT-5.6 Sol，High |
-| MARK-X：Executor / Writer | GPT-5.6 Terra，High |
+| MARK-P：Planner | 独立上下文中的 GPT-5.6 Sol，High |
+| MARK-X：Executor / Writer | 独立上下文中的 GPT-5.6 Sol，High |
 | MARK-R：Reviewer | 无历史独立任务中的 GPT-5.6 Sol，High |
-| MARK-S：Scout / Researcher | GPT-5.6 Luna 或确定性工具 |
+| MARK-S：Scout / Researcher | 默认不启动；需要时使用只读 GPT-5.6 Sol |
 | Arc Reactor：Mechanical Verifier | 测试、静态检查和命令行验收 |
 
-后续保持任务和验收不变，只把 MARK-X 替换为 DeepSeek V4 Pro 做 A/B；Kimi K3 仅在 Veronica 条件成立时作为异构 MARK-P：Planner Challenger。
+P1 有意只使用旗舰模型，以免把流程缺陷和模型能力差异混在一起；当前不把 GPT 次旗舰或 DeepSeek V4 Flash 纳入正式路线。P1/P2 稳定后，保持任务和验收不变，只把 MARK-X 从 GPT-5.6 Sol 替换为 DeepSeek V4 Pro 做 A/B。Kimi K3、GLM-5.2 等其他旗舰模型不常驻，只在 Veronica 条件真实成立时，择一作为异构 MARK-P：Planner Challenger。
 
 模型思考预算与团队拓扑分别决策：`High` 是默认 reasoning effort，深度任务按需升到 `Max`；House Party 只由任务依赖和隔离条件触发。支持 `Ultra` 的环境可以用它主动调度 Subagents，但不能以模式名称代替任务分析。
+
+P1 的具体命令、数据流、非目标和开跑门禁见 [`docs/archive/2026-07-24-initial-design/DEMO_DESIGN.md`](docs/archive/2026-07-24-initial-design/DEMO_DESIGN.md)。在 Tony Stark 同时通过技术路线 Gate A 与 Mission 契约 Gate B 前，不进入实现。
 
 ## 开源边界
 
@@ -143,17 +145,18 @@ Candidate → Probation → Active → Preferred
 2. **P1 GPT-only Demo**：用固定编制跑通端到端流程；
 3. **P2 Harden**：连续真实 Mission、故障注入与证据链校准；
 4. **P3 DeepSeek A/B**：只替换 Executor；
-5. **P4 Veronica Experiment**：在真实触发条件下测试 Kimi Planner Challenger；
+5. **P4 Veronica Experiment**：在真实触发条件下择一测试异构旗舰 Planner Challenger；
 6. **P5 Adaptive Routing**：根据历史证据校准动态权重与淘汰；
 7. **P6 Productize & Open-source**：固化 Skill、完成干净克隆验证并发布首个版本。
 
-详细任务、退出条件和实验指标见 [`docs/PLAN.md`](docs/PLAN.md)。
+详细任务、退出条件和实验指标见 [`docs/archive/2026-07-24-initial-design/PLAN.md`](docs/archive/2026-07-24-initial-design/PLAN.md)。
 
 ## 文档
 
-- [`docs/README.md`](docs/README.md)：文档导航
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)：稳定架构与运行协议
-- [`docs/PLAN.md`](docs/PLAN.md)：实施路线、实验设计与未决决策
+- [`docs/README.md`](docs/README.md)：当前文档导航
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)：当前架构总览
+- [`docs/PLAN.md`](docs/PLAN.md)：当前阶段与下一步
+- [`docs/archive/2026-07-24-initial-design/DEMO_DESIGN.md`](docs/archive/2026-07-24-initial-design/DEMO_DESIGN.md)：归档的 P1 Demo 技术提案
 
 ## 参考与灵感
 
