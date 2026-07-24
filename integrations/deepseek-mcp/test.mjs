@@ -131,17 +131,21 @@ async function startMockProvider(redirectLocation) {
       }
 
       response.statusCode = 200;
+      const forcedLength =
+        body.messages?.[1]?.content === "force-length";
       response.end(
         JSON.stringify({
           id: "mock-response",
           model: "deepseek-v4-pro",
           choices: [
             {
-              finish_reason: "stop",
+              finish_reason: forcedLength ? "length" : "stop",
               index: 0,
               message: {
                 role: "assistant",
-                content: "Mock DeepSeek answer",
+                content: forcedLength
+                  ? "Partial DeepSeek answer"
+                  : "Mock DeepSeek answer",
                 reasoning_content: "This must not be returned.",
               },
             },
@@ -322,6 +326,8 @@ async function run() {
   });
   assert.equal(successfulCall.result.isError, false);
   assert.match(successfulCall.result.content[0].text, /Mock DeepSeek answer/);
+  assert.equal(successfulCall.result.structuredContent.finish_reason, "stop");
+  assert.equal(successfulCall.result.structuredContent.truncated, false);
   assert.doesNotMatch(
     successfulCall.result.content[0].text,
     /This must not be returned/,
@@ -346,7 +352,20 @@ async function run() {
   });
   assert.equal(maxEffortDefault.result.isError, false);
   assert.equal(mock.requests[1].body.reasoning_effort, "max");
-  assert.equal(mock.requests[1].body.max_tokens, 8192);
+  assert.equal(mock.requests[1].body.max_tokens, 32768);
+
+  const truncatedCall = await client.request("tools/call", {
+    name: "ask_deepseek",
+    arguments: {
+      prompt: "force-length",
+      max_tokens: 384000,
+    },
+  });
+  assert.equal(truncatedCall.result.isError, false);
+  assert.equal(truncatedCall.result.structuredContent.finish_reason, "length");
+  assert.equal(truncatedCall.result.structuredContent.truncated, true);
+  assert.match(truncatedCall.result.content[0].text, /TRUNCATED/);
+  assert.equal(mock.requests[2].body.max_tokens, 384000);
 
   const rejectedArgument = await client.request("tools/call", {
     name: "ask_deepseek",
@@ -357,7 +376,7 @@ async function run() {
     rejectedArgument.result.content[0].text,
     /unsupported fields/,
   );
-  assert.equal(mock.requests.length, 2);
+  assert.equal(mock.requests.length, 3);
 
   const secretRole = "invalid-role-with-secret-material";
   const rejectedRole = await client.request("tools/call", {
@@ -369,7 +388,7 @@ async function run() {
     rejectedRole.result.content[0].text,
     new RegExp(secretRole),
   );
-  assert.equal(mock.requests.length, 2);
+  assert.equal(mock.requests.length, 3);
 
   const providerError = await client.request("tools/call", {
     name: "ask_deepseek",

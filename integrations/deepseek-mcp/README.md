@@ -16,6 +16,8 @@ GPT Chair
 
 DeepSeek 官方支持把 V4 Pro 接入 OpenCode 等 coding agent。本项目固定使用 OpenCode `1.18.4` 作为工具循环运行时，并通过环境变量传入 `DEEPSEEK_API_KEY`。
 
+`ask_deepseek` 的普通 `high` 调用默认允许 8K 输出，`max` 调用默认允许 32K；调用者可以显式提高到 DeepSeek V4 Pro 官方的 384K 上限。桥接会返回 `finish_reason` 和 `truncated`，避免长度耗尽时把半截回答误认为完整结果。
+
 ## 安全边界
 
 Worker 只允许 `read/edit/glob/grep/list` 等工作区文件工具，并明确禁止：
@@ -31,6 +33,18 @@ Worker 只允许 `read/edit/glob/grep/list` 等工作区文件工具，并明确
 同一或重叠工作区不能并行运行多个 Writer。需要并行时，Chair 必须先准备独立 Git worktree；任一并行 Worker 失败时，整组 Worker 会先被终止并完成清理，再释放目录锁。
 
 ## 安装与验证
+
+创建 Codex 全局目录联接：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\integrations\install-global.ps1
+```
+
+该脚本让 `~/.codex/integrations/deepseek` 指向项目中的 `integrations/`，并让全局 `multi-subagents` Skill 指向项目 Skill 源码。此后只维护项目中的一份文件。
+
+Windows 默认使用锁定的 `opencode-windows-x64`。Linux/macOS 不需要本项目提供安装包：使用者自行安装 OpenCode，并把 `DEEPSEEK_OPENCODE_BIN` 设置为其可执行文件的绝对路径；Worker 会优先使用该路径。
+
+源码级验证：
 
 ```powershell
 npm.cmd install --prefix integrations\deepseek-worker --cache .tmp\npm-cache --ignore-scripts

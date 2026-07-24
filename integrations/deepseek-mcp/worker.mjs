@@ -29,6 +29,20 @@ const SENSITIVE_FILENAMES = new Set([
 ]);
 
 function workerBinary() {
+  const configured = process.env.DEEPSEEK_OPENCODE_BIN;
+  if (configured) {
+    if (!path.isAbsolute(configured)) {
+      throw new Error(
+        "CONFIG_INVALID: DEEPSEEK_OPENCODE_BIN must be an absolute path.",
+      );
+    }
+    return path.normalize(configured);
+  }
+  if (process.platform !== "win32") {
+    throw new Error(
+      "CONFIG_MISSING: install OpenCode and set DEEPSEEK_OPENCODE_BIN to its absolute path.",
+    );
+  }
   return path.resolve(
     path.dirname(fileURLToPath(import.meta.url)),
     "..",

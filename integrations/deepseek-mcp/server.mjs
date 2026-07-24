@@ -14,7 +14,10 @@ const MAX_CONCURRENT_REQUESTS = 2;
 const MAX_CONCURRENT_WORKERS = 3;
 const MAX_RPC_LINE_BYTES = 256 * 1024;
 const MAX_INPUT_BYTES = 160 * 1024;
-const MAX_PROVIDER_RESPONSE_BYTES = 2 * 1024 * 1024;
+const MAX_PROVIDER_RESPONSE_BYTES = 8 * 1024 * 1024;
+const MAX_OUTPUT_TOKENS = 384000;
+const DEFAULT_HIGH_OUTPUT_TOKENS = 8192;
+const DEFAULT_MAX_OUTPUT_TOKENS = 32768;
 const ALLOWED_MODELS = new Set([DEFAULT_MODEL]);
 const ALLOWED_ROLES = new Set([
   "planner",
@@ -58,9 +61,9 @@ const TOOL = {
       max_tokens: {
         type: "integer",
         minimum: 1,
-        maximum: 8192,
+        maximum: MAX_OUTPUT_TOKENS,
         description:
-          "Optional output budget. Defaults to 4,096 for high effort and 8,192 for max effort.",
+          "Optional output budget. Defaults to 8,192 for high effort and 32,768 for max effort; explicit requests may use the provider maximum of 384,000.",
       },
     },
   },
@@ -231,7 +234,10 @@ function validateArguments(value) {
   const role = value.role ?? "challenger";
   const reasoningEffort = value.reasoning_effort ?? "high";
   const maxTokens =
-    value.max_tokens ?? (reasoningEffort === "max" ? 8192 : 4096);
+    value.max_tokens ??
+    (reasoningEffort === "max"
+      ? DEFAULT_MAX_OUTPUT_TOKENS
+      : DEFAULT_HIGH_OUTPUT_TOKENS);
 
   if (typeof prompt !== "string" || prompt.trim().length === 0) {
     throw new Error("prompt must be a non-empty string.");
@@ -258,7 +264,7 @@ function validateArguments(value) {
   if (
     !Number.isInteger(maxTokens) ||
     maxTokens < 1 ||
-    maxTokens > 8192
+    maxTokens > MAX_OUTPUT_TOKENS
   ) {
     throw new Error("INVALID_INPUT: max_tokens is outside the allowed range.");
   }
@@ -433,6 +439,10 @@ async function askDeepSeek(args, requestId) {
       throw new Error("BAD_RESPONSE: DeepSeek returned no final answer.");
     }
 
+    const finishReason =
+      typeof body?.choices?.[0]?.finish_reason === "string"
+        ? body.choices[0].finish_reason
+        : undefined;
     const usage = body?.usage;
     return {
       answer,
@@ -440,6 +450,8 @@ async function askDeepSeek(args, requestId) {
         typeof body?.model === "string" && ALLOWED_MODELS.has(body.model)
           ? body.model
           : DEFAULT_MODEL,
+      finish_reason: finishReason,
+      truncated: finishReason === "length",
       usage: normalizeUsage(usage),
     };
   } catch (requestError) {
@@ -656,11 +668,14 @@ async function handle(message) {
       const usage = response.usage
         ? `\n\nUsage: ${JSON.stringify(response.usage)}`
         : "";
+      const truncation = response.truncated
+        ? "\n\n[TRUNCATED: DeepSeek reached max_tokens. Request continuation or retry with a larger output budget.]"
+        : "";
       result(id, {
         content: [
           {
             type: "text",
-            text: `${response.answer}${usage}`,
+            text: `${response.answer}${truncation}${usage}`,
           },
         ],
         structuredContent: response,

@@ -1,223 +1,311 @@
-# JARVIS
+# Multi-Subagents
 
-> 一套面向 Codex 的全局多 Agent 协作 Skill：把用户的粗略想法组织成 `Plan → Execute → Check`，让人保持 high-level 监督，同时避免长链任务失控后无从定位。
+> 用一个强 GPT 主 Agent 主持决策，让 GPT 与 DeepSeek 在 Plan 和 Check 阶段进行有限轮次的攻防，由 DeepSeek V4 Pro 负责具体实现。
 
-JARVIS 目前处于 high-level 设计阶段，尚未实现 Demo。项目计划在验证有效后于 GitHub 开源；在此之前，根目录的 `README.md` 是唯一权威文档。
+## 1. 为什么需要它
 
-## Motivation
+长任务有两个常见极端。
 
-随着 Agent 的执行能力增强，人机协作容易落入两个极端。
+人如果规划一点、让 AI 做一点、再逐步检查一点，确实比较稳，但最终会变成人工流水线质检员。反过来，如果把整条任务链一次性交给 AI，顺利时很轻松；一旦结果异常，却很难判断问题最早出在思路、执行还是验收。
 
-一种方式是人规划一点、Agent 执行一点、人再逐步检查。它比较稳，但人会被迫持续检查数据流、参数和局部实现，无法真正把任务交出去。
+这个 Skill 想解决的只有一个问题：
 
-另一种方式是把长任务一次性交给 Agent。顺利时体验很好；一旦最终结果异常，却很难判断最早的问题来自思路、执行还是验收，因为所有因素都混在同一条长链里。
+> 让人退出逐步监督，同时通过多 Agent 的规划攻防、专注执行和对抗审查，降低长链任务跑偏后无法定位的风险。
 
-JARVIS 的出发点因此很简单：
+它不是严丝合缝的工作流引擎，也不追求固定人数、复杂表单或无限辩论。AI 已经很擅长执行；额外模型最有价值的位置，是执行前把 Plan 想透，以及执行后把结果攻破。
 
-> 为了避免长链迷失，我们借鉴公司的分工方式，让多个 Agent 分别参与 Plan、Execute 和 Check；用户只负责方向、重要取舍与最终判断。
+## 2. 总体结构
 
-这个项目不追求建立一套严丝合缝的官僚系统。当前判断是：AI 通常已经具有很强的执行力，最值得加强的是前端的 **Plan** 和后端的 **Check**；Execute 应在明确计划下保留充分自由。
-
-## STARK Agent OS
-
-固定的是三类责任，不是三个固定 Agent，也不是固定人数：
+固定的是 `Plan -> Execute -> Check` 三类责任，不是固定三个 Agent。
 
 ```text
-STARK Agent OS
-└── 用户 / Project Owner
-    └── JARVIS / Chair Agent
-        ├── Plan：决定应该怎样做
-        │   ├── Planner：提出主要方案
-        │   ├── Independent Planner / Challenger：按需提供独立方案或质疑
-        │   ├── Researcher：按需查清关键事实
-        │   └── JARVIS：比较证据并收敛为一个可执行计划
-        │
-        ├── Execute：把计划变成结果
-        │   ├── Executor：对整体实现负责
-        │   ├── Workers：只在任务能够独立拆分时并行
-        │   └── 发现计划不成立时返回 Plan
-        │
-        └── Check：独立判断结果是否可信
-            ├── Tests / Evidence：检查可客观验证的结果
-            ├── Independent Reviewer：对照目标、计划与实际产物
-            └── 通过、返回 Execute，或返回 Plan
+用户
+`-- GPT Chair：理解目标、组织攻防、依据证据裁决
+    |-- 1. Plan
+    |   `-- Chair 提出草稿 -> DeepSeek 攻击 -> Chair 防守或修订
+    |-- 2. Execute
+    |   |-- DeepSeek Worker：默认唯一实现者
+    |   `-- 更多 DeepSeek Workers：仅用于独立 worktree
+    `-- 3. Check
+        |-- 可复现检查
+        `-- GPT Chair 攻击 -> DeepSeek Executor 防守或修复
 ```
 
-JARVIS 是主持和调度者：它决定何时需要额外视角，汇总分歧，并把真正涉及用户偏好或目标取舍的问题交还用户。多 Subagent 是提升思考质量和并行效率的手段，不是目的。
+GPT Chair 保留用户目标和全局上下文。它可以调查项目、准备 worktree、运行测试和整合结果，但不应悄悄接管代码实现；需要写代码时，继续派给 DeepSeek Worker。
 
-## Plan
+## 3. Plan：有限轮次的对抗规划
 
-Plan 解决的是“执行得很好，但一开始想得不够好”。
+简单、明确、可机械验证的任务由 Chair 直接规划，不为了形式强行开会。
 
-### 最小流程
+当存在多条合理路线、错误返工昂贵、关键假设不稳定或任务难以验证时，启动对抗规划：
 
 ```text
-理解目标与项目现状
-→ 找出关键未知和可能路线
-→ 按需引入独立方案、挑战或研究
-→ 比较假设、证据与代价
-→ JARVIS 收敛为一个可执行计划
+Chair：基于目标、约束和项目事实提出 Plan 草稿
+   |
+DeepSeek Challenger：定点攻击假设、反例、失败模式和验证缺口
+   |
+Chair：承认有效攻击并修订，或提供新证据防守
+   |
+DeepSeek Challenger：仅在还能提供新证据时继续反驳
 ```
 
-简单、明确的任务不必强制召集多个 Planner。只有当存在关键不确定性、多条合理路线、陌生领域或昂贵返工时，才值得增加独立视角。
+攻防不要求双方先独立写一份完整方案。Chair 负责提出和收敛方案，DeepSeek 负责施加对抗压力。默认两轮、最多三轮；目标是暴露盲区，不是强迫达成共识，也不是按票数决定路线。
 
-多个 Agent 的目标是暴露盲点，而不是开会投票或强求一致。JARVIS 应根据事实和可验证证据作出技术裁决；证据无法解决、且会改变用户真实目标的分歧，才交给用户。
+当继续辩论已经不能产生新证据时，Chair 停止讨论：
 
-Plan 的结果至少要让后续知道：
+- 一方方案证据更充分：Chair 采用该方案；
+- 分歧来自缺少可验证事实：先做最小调查或实验；
+- 分歧涉及用户偏好、风险取舍或仍无法判断：交给用户。
 
-- 准备解决什么问题，什么不在范围内；
-- 选择了什么路线，关键假设是什么；
-- 工作如何拆分，怎样判断完成。
-
-这些内容不要求固定 schema，也不要求为每个任务制造冗长文档。
-
-模型品牌不写死，但能力应与责任匹配：Chair 和 Plan 优先保证推理质量；Execute 在计划清楚后可以权衡能力与成本；Check 必须足够独立，也必须有能力挑战计划和结果。
-
-## Execute
-
-Execute 解决的是“计划合理，但实现没有忠实落地”。
-
-执行阶段保持轻量：
-
-- 默认由一个 Executor 对整体结果负责；
-- 只有彼此独立、能够分别验收的工作才交给多个 Workers 并行；
-- Agent 可以自主决定局部实现，不需要逐步向用户请示；
-- 如果新事实推翻了计划，应明确返回 Plan，而不是悄悄改变整体方向。
-
-Execute 不承担重新证明整个方案是否正确。它的核心责任是：在计划边界内把事情做好，并清楚呈现实际完成了什么。
-
-## Check
-
-Check 解决的是“看起来做完了，但没人独立确认它是否真的完成”。
-
-Reviewer 应使用独立上下文，至少对照三样东西：
+提交给用户的不是整段聊天，而是一份简短证据包：
 
 ```text
-原始目标
-＋ JARVIS 收敛并采用的 Plan
-＋ 实际产物与可观察结果
+争议决策
+|-- 方案 A：证据与后果
+|-- 方案 B：证据与后果
+`-- Chair 的推荐及理由
 ```
 
-这里的“独立”不是仅仅换一个线程名称，而是让 Reviewer 在新的上下文中直接看到必要输入，不继承 Executor 的完整自我解释。
+## 4. Execute：只让 DeepSeek 实现
 
-它重点回答四个问题：
+计划确定后，DeepSeek V4 Pro 是唯一代码 Writer。
 
-1. 原始任务是否真正完成；
-2. 实际结果是否忠实执行了 Plan；
-3. Plan 中要求的内容是否有遗漏；
-4. 是否未经允许增加、删除或改变了内容。
+### 一个实现任务
 
-能够客观检查的部分优先使用普通测试、运行结果或其他证据；不能机械判断的部分再由独立 Reviewer 审查。
+Chair 调用 `run_deepseek_worker`，提供：
 
-Check 不只是给出“通过/不通过”，还要指出应该回到哪里：
+- 已采用的 Plan；
+- 实现范围和非目标；
+- 项目约束；
+- 完成标准和后续检查。
+
+Worker 可以自主读取和编辑指定工作区，但首版不允许使用终端、网络、外部目录或递归 subagent。完成后，由 Chair 运行测试；若失败，把具体错误证据重新交给 DeepSeek 修复。
+
+### 多个实现任务
+
+只有子任务可以独立实现、独立验收时，才调用 `run_deepseek_workers`：
 
 ```text
-计划合理，但实现偏离      → 返回 Execute
-实现忠实，但计划不能达成目标 → 返回 Plan
-目标或产品取舍需要改变      → 交给用户
+独立任务 A -> DeepSeek Worker A -> worktree A
+独立任务 B -> DeepSeek Worker B -> worktree B
+独立任务 C -> DeepSeek Worker C -> worktree C
 ```
 
-JARVIS 最终只需保留一条最小记录：
+同一或相互嵌套的工作区不允许同时存在多个 Writer。并行省的是高价模型成本和墙上时间，并不天然节省总 token；耦合任务应交给一个 Worker。
+
+DeepSeek 不可用时只重试一次，不应静默切换为 GPT 实现。
+
+## 5. Check：让结果经受攻击
+
+Check 先做可复现检查，再进行模型攻防。所谓可复现检查，是同样的输入和环境能够重复得到明确结果、不依赖某个模型主观看法的检查。例如测试是否通过、构建是否成功、CLI 输出是否符合预期、实验指标是否可重跑，以及链接、渲染或交互是否正常。
 
 ```text
-Plan 摘要 → Execute 实际结果 → Check 证据与判断
+可复现检查
+-> GPT Chair 攻击 Plan 与实现
+-> DeepSeek Executor 用代码、diff 和测试证据防守或修复
+-> GPT Chair 根据新证据重新攻击或通过
+-> Chair 裁决
 ```
 
-这就是最小的长链定位能力，不需要先建设复杂的证据系统或状态机。
+GPT Chair 直接切换到攻击者立场，对照原始目标、采用的 Plan、实际产物和检查结果寻找偏差；DeepSeek Executor 负责举证防守或修复。高风险任务可以额外启动 Fresh GPT Reviewer，但它不是默认流程。
 
-## Codex 如何实现
+默认两轮、最多三轮。Review 分别判断：
 
-### Global Skill 能做什么
+1. Plan 是否真正满足原始目标；
+2. 实现是否忠实满足 Plan；
+3. 是否遗漏要求；
+4. 是否未经允许增加、删除或改变内容。
 
-Codex 当前支持由主 Agent 启动专门化 Subagents，并明确说明：适用的 Skill 指令可以要求 Codex 进行委派。不同 Subagent 在独立线程中工作，主 Agent 收集结果并统一回复。[Codex Subagents](https://learn.chatgpt.com/docs/agent-configuration/subagents)
+计划正确但实现偏离，返回 Execute；实现忠实但 Plan 错误，返回 Plan；高影响争议仍无法解决，则把证据包交给用户。
 
-因此，一个 Global JARVIS Skill 可以把上述流程写进 `SKILL.md`：
+## 6. 为什么 DeepSeek 原来不能编辑文件
+
+DeepSeek API 本身只是一个推理接口：
 
 ```text
-用户任务触发 JARVIS Skill
-→ JARVIS 判断当前任务需要哪些独立视角
-→ 在 Plan 和 Execute 中按需调用 Subagents
-→ 非平凡任务执行后启动独立 Check
-→ 收集结果、处理返工并向用户汇总
+输入：messages
+输出：文本或 tool-call 意图
 ```
 
-简单任务的 Check 可以只是客观测试，不必每次都启动 Reviewer；非平凡任务则默认经过独立审查。这个过程属于指令驱动的自动调度，不是一个确定性的工作流引擎。Codex 仍会结合任务、可用工具、权限和运行环境作出判断；Skill 应表达必要原则，不应把每个任务锁进固定人数和固定轮次。
-
-首版只需要一个 Global Skill，不为每个项目再造一套 JARVIS Skill。具体项目的代码、现有说明、测试和用户要求仍然构成该任务的上下文。
-
-对于原生 Codex Subagents，可以使用自定义 Agent 配置分别指定角色指令、GPT 模型、推理强度、工具和沙箱；Global Skill 负责“何时调用谁”，这些配置负责“该 Agent 怎样运行”。[Codex Subagents](https://learn.chatgpt.com/docs/agent-configuration/subagents)
-
-### Kimi、DeepSeek 能否成为 Subagent
-
-结论分三层：
+它不会自动获得本机文件系统、终端或 Codex 的沙箱。最初的 `ask_deepseek` 只是：
 
 ```text
-只使用 Codex 原生模型
-└── 可以由 Global Skill 直接要求 Codex 调度 Subagents
-
-使用 Kimi / DeepSeek
-└── 当前不能仅填入模型名就成为原生 Subagent
-    ├── Codex 自定义 Provider 当前要求 Responses API
-    ├── 两家当前公开接口主要是 Chat Completions
-    ├── 因而需要协议转译 Gateway，或独立外部 Worker
-    └── 混合供应商调度仍需在目标客户端实测
-
-只有一个 SKILL.md
-└── 不能完成 Provider、API key、协议转换和兼容适配
+Codex -> 发送 prompt/context -> DeepSeek API -> 返回文本
 ```
 
-Codex 当前允许配置自定义模型 Provider，但精确配置参考把 `responses` 列为唯一支持的 wire API；Provider 和认证也属于用户级配置，不能由一个项目 Skill 自动替朋友完成。[Codex 配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)
+所以 DeepSeek 可以建议怎么改，却不能真正读取仓库、修改文件或反复执行工具。
 
-DeepSeek 和 Kimi 都提供 OpenAI-compatible Chat Completions 与 Tool Calls，但这并不等于兼容 Codex 的完整 Agent 循环。Kimi 官方的 Codex 指南也明确使用本地路由器，在 Codex Responses 与 Kimi Chat Completions 之间转换协议。[DeepSeek API](https://api-docs.deepseek.com/guides/agent_integrations/openclaw) · [DeepSeek Tool Calls](https://api-docs.deepseek.com/guides/tool_calls/) · [Kimi API](https://platform.kimi.ai/docs/api/overview) · [Kimi Codex 接入指南](https://platform.kimi.ai/docs/guide/codex-kimi)
-
-但这条路径目前仍是**待验证能力**，不是 JARVIS 已经交付的功能：
-
-- 当前文档没有保证同一个 OpenAI 主会话能为每个 Subagent 分别切换供应商；
-- Gateway 还要正确处理流式响应、工具结果、多轮上下文和模型特有字段；
-- 使用外部模型意味着任务上下文和必要代码会发送给相应供应商。
-
-所以第一版先用 Codex 原生 Subagents 验证工作流；确认 JARVIS 本身有效后，再分别测试“Responses Gateway”或“独立 Worker”路线。不同供应商的模型只在 Plan 盲点或 Check 独立性值得额外成本时引入，不作为每个任务的固定编制。
-
-## 当前路线
+现在增加了两层能力：
 
 ```text
-1. High-level 设计（当前）
-   └── 逐一确认 Plan、Execute、Check 的必要职责与边界
+multi-subagents/SKILL.md
+`-- 决定什么时候规划、执行、审查
 
-2. 最小 Global Skill
-   └── 用简洁 SKILL.md 固化流程，不加入固定编制和复杂协议
+DeepSeek MCP Bridge
+`-- 把 Codex 的执行任务交给外部 Worker
 
-3. Codex 原生验证
-   └── 在真实任务中检查规划质量、独立审查和故障定位是否有用
+OpenCode Agent Runtime
+`-- 将 DeepSeek 的 tool calls 变成受限的 read/edit 操作
 
-4. 外部模型实验
-   └── 分别验证 DeepSeek / Kimi 的 Gateway 或独立 Worker，不同时改变其他变量
-
-5. 开源发布
-   └── 整理为朋友能够安装和理解的 Skill；确有需要时再包装 Plugin
+DeepSeek V4 Pro API
+`-- 负责理解代码和决定具体修改
 ```
 
-当前不设计固定 Agent 数量、风险等级、Mission schema、动态权重、模型淘汰或价格路由。以后只有真实任务暴露出明确问题时，才增加对应机制。
+因此，Skill 负责“什么时候调用谁”，MCP 负责“连接 Codex 与外部 Worker”，OpenCode 提供“手”，DeepSeek 提供“脑”。只写一个 Skill 无法凭空给外部模型增加文件工具。
 
-判断 JARVIS 是否值得发布，最终只看四件事：
+DeepSeek 官方支持以 V4 Pro 作为 OpenCode 等 coding agent 的后端；当前实现固定使用 OpenCode `1.18.4` 和 `deepseek-v4-pro`，默认推理强度为 `high`，困难任务可升为 `max`。
 
-- 多 Agent 是否形成了比单次规划更可靠的 Plan；
-- Independent Reviewer 是否能发现遗漏和未经允许的改动；
-- 用户是否确实减少了逐步检查；
-- 出错后是否能判断应返回 Plan 还是 Execute。
+### 输出预算
 
-## 项目与参考
+DeepSeek V4 Pro 的官方最大输出是 384K，但最大能力不等于每次调用的合理默认值。当前 `ask_deepseek` 使用分层预算：
 
-根 `README.md` 是当前唯一权威文档。新开对话时只需让 Codex 先阅读本文件，再说明本次要讨论或验证的部分。
+```text
+high：默认 8K
+max：默认 32K
+显式请求：最高 384K
+```
 
-早期私人聊天保留在本地并由 `.gitignore` 排除；第三方参考仓库的浅克隆保留在被忽略的 `references/local/repos/`，仅用于研究，不是运行依赖，也不会直接复制进 JARVIS。
+若模型因为 `max_tokens` 停止，桥接会返回 `finish_reason: length` 和 `truncated: true`，提示继续生成或提高预算，而不是把半截回答当作完整结果。
 
-主要参考：
+## 7. 全局安装
 
-- 技术基础：[OpenAI Codex Subagents](https://learn.chatgpt.com/docs/agent-configuration/subagents)
-- Plan 与分阶段审查：[Superpowers](https://github.com/obra/superpowers)
-- 公司角色与专业工作流：[gstack](https://github.com/garrytan/gstack)
-- Check、证据与审计：[Agentic Orchestration Control](https://github.com/ZypherHQ/agent-orchestration-skill)
-- 任务依赖与并行：[Swarms](https://github.com/am-will/swarms)
+DeepSeek 的开发源码和 Skill 只保存在本项目。Codex 全局目录通过 Windows 目录联接指向这些源码，因此这里只维护一份，修改后无需再次复制同步：
 
-项目尚未选择开源许可证。在加入 `LICENSE` 前，请不要假定仓库内容已经获得复制、修改或分发授权。`STARK` 与 `JARVIS` 是当前工作名称，正式发布前还会进行命名与权利审查。
+```text
+本项目
+|-- skill/multi-subagents/SKILL.md
+|-- integrations/deepseek-mcp/
+|-- integrations/deepseek-worker/
+`-- integrations/install-global.ps1
+```
+
+```text
+~/.codex/skills/multi-subagents
+`-- junction -> 本项目/skill/multi-subagents
+
+~/.codex/integrations/deepseek
+`-- junction -> 本项目/integrations
+```
+
+全局安装命令：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\integrations\install-global.ps1
+```
+
+用户级 `~/.codex/config.toml` 指向全局 MCP：
+
+```toml
+[mcp_servers.deepseek]
+command = '<ABSOLUTE_NODE_PATH>'
+args = ['<USER_HOME>\.codex\integrations\deepseek\deepseek-mcp\server.mjs']
+env_vars = ["DEEPSEEK_API_KEY"]
+enabled_tools = ["ask_deepseek", "run_deepseek_worker", "run_deepseek_workers"]
+tool_timeout_sec = 930
+default_tools_approval_mode = "approve"
+
+[mcp_servers.deepseek.env]
+DEEPSEEK_ALLOWED_ROOTS = '<ABSOLUTE_TRUSTED_PROJECT_ROOT>'
+```
+
+将三个占位符替换为本机绝对路径。位于同一可信代码根下的 Git 项目不需要逐个配置；若项目分布在不同顶层目录，再把必要范围加入 `DEEPSEEK_ALLOWED_ROOTS`。
+
+`approve` 会默认放行该 MCP 的普通工具调用，避免每次手动确认；它不会绕过 Codex 对密钥外发、危险写入等行为的安全审查。
+
+API key 只保存在本机环境变量 `DEEPSEEK_API_KEY`，不会写入 Skill、仓库或 `config.toml`。目录联接会让正文修改立即反映到全局路径，但 Codex 通常在新会话或重启后重新读取 Skill 元数据和 MCP 配置。
+
+### Windows 与 Linux
+
+仓库不提交 OpenCode 二进制。Windows 安装脚本会根据锁文件下载当前验证版本，并创建目录联接；Linux 云服务器则由使用者按 OpenCode 官方方式安装，然后把绝对路径交给 Worker：
+
+```bash
+export DEEPSEEK_OPENCODE_BIN="$(command -v opencode)"
+export DEEPSEEK_API_KEY="..."
+
+ln -s /path/to/use-subagents/skill/multi-subagents \
+  ~/.codex/skills/multi-subagents
+ln -s /path/to/use-subagents/integrations \
+  ~/.codex/integrations/deepseek
+```
+
+Linux 的 MCP 配置还需把 `DEEPSEEK_OPENCODE_BIN` 加入 `env_vars`。项目不为不同系统分发安装包；操作系统只决定 OpenCode 的安装路径和全局链接方式，Skill 与桥接源码保持同一份。
+
+## 8. 安全边界
+
+允许 DeepSeek 编辑文件意味着相关代码会发送给 DeepSeek。当前桥接采用以下限制：
+
+- 仅接受 `DEEPSEEK_ALLOWED_ROOTS` 下的 Git 仓库或 worktree 根；
+- 拒绝包含 `.env`、私钥、PEM、凭据文件的工作区；
+- 拒绝项目内 `opencode.json`、`opencode.jsonc` 和 `.opencode/`，防止覆盖权限；
+- 仅开放工作区内 `read/edit/glob/grep/list`；
+- 禁止终端、网络、外部目录、插件、MCP 和递归 subagent；
+- 一个工作区只允许一个 Writer；
+- 并行组任一 Worker 失败时，先终止并等待其他 Worker，再释放目录锁；
+- 工具调用默认要求批准。
+
+这些保护降低常见风险，但不能证明任意代码库绝不包含秘密。应优先使用干净 worktree，不要把生产凭据放进交给外部模型的工作区。
+
+## 9. 本次调试过程
+
+### 阶段一：验证普通 API
+
+先用 DeepSeek 官方 `chat/completions` 接口实现 `ask_deepseek`，固定模型为 V4 Pro，启用 thinking，并测试鉴权、超时、取消、响应大小、重定向和密钥脱敏。
+
+结果：DeepSeek 能参与 Plan 和 Review，但只能返回文本。
+
+### 阶段二：增加 Agent 工具循环
+
+为了让 DeepSeek 真正操作代码，引入 DeepSeek 官方支持的 OpenCode。第一次通过通用 npm 包安装失败，因为 Windows 平台包没有正确落地；随后固定安装 `opencode-windows-x64@1.18.4`。
+
+结果：DeepSeek 成功读取隔离目录的 README，并按要求只修改一行。
+
+### 阶段三：解决真实运行卡住
+
+封装成 Worker 后，第一次真实测试一直等待到超时。原因不是模型能力，而是启动 Worker 时清理环境变量过度，把本机代理变量一并删除，导致 OpenCode 无法访问 DeepSeek API。
+
+修正后只转发必要的系统变量、API key 和代理变量。单 Worker 恢复为十几秒内完成。
+
+### 阶段四：安全复核
+
+第一轮实现虽然能工作，但复核发现四个关键问题：
+
+1. 调用者可以把任意目录声明为 workspace；
+2. 项目 OpenCode 配置可能覆盖权限；
+3. Worker 可能读到 `.env` 或私钥；
+4. 并行组中一个 Worker 失败后，其他 Worker 可能继续写文件。
+
+对应修复为：可信根 allowlist、Git 根校验、拒绝项目 OpenCode 配置、敏感文件扫描和读取 deny、唯一受限 Agent、跨调用目录锁，以及并行 fail-fast 后等待清理。
+
+### 阶段五：验证结果
+
+当前已经通过：
+
+- MCP 桥接单元测试；
+- Skill 格式校验；
+- 单个 DeepSeek Worker 的真实文件编辑；
+- 两个 DeepSeek Workers 在不同 Git 工作区中的真实并行编辑；
+- 密钥未进入仓库扫描。
+
+真实并行测试中，两个 Worker 分别只修改自己的 README，证明“一个 Writer 一个 worktree”的主路径已经跑通。
+
+## 10. 当前状态
+
+当前版本已经具备：
+
+```text
+Plan：GPT + DeepSeek 有限轮次攻防
+Execute：一个或多个隔离的 DeepSeek V4 Pro Workers
+Check：可复现检查 + GPT Chair 与 DeepSeek 有限轮次攻防
+```
+
+它仍是一个轻量实验版本。首版有意不加入固定角色编制、复杂任务 schema、动态模型权重或自动淘汰；只有真实使用暴露出明确问题时，再增加对应约束。
+
+## 参考
+
+- [Codex 配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)
+- [Codex Subagents](https://learn.chatgpt.com/docs/agent-configuration/subagents)
+- [DeepSeek coding-agent 集成指南](https://api-docs.deepseek.com/guides/coding_agents/)
+- [DeepSeek API](https://api-docs.deepseek.com/)
+- [OpenCode Agent 配置](https://opencode.ai/docs/agents/)
+- [OpenCode 权限模型](https://opencode.ai/docs/permissions/)
