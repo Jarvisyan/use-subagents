@@ -12,4 +12,39 @@ Then reorganize the plan around the smallest useful set of questions or analysis
 
 ## Keep each analysis object together
 
-When the upcoming plan will create scripts or outputs, let the same analysis object organize them. Prefer one parameterized script and one output root per object, keeping related variants and results together. Split them only when a genuinely separate analysis object or execution boundary requires it.
+When the upcoming plan will create scripts or outputs, use each analysis object as the organizing directory and prefix peer object directories with numbers to show the planned analysis or experiment order. Within each object, prefer the smallest coherent set of parameterized scripts and one output root. Split scripts when responsibilities or execution boundaries genuinely differ, while keeping configurations, variants, runs, and summaries inside the same object.
+
+Avoid splitting one object's variants and reruns into peer scripts and output roots while mixing different objects at the same level:
+
+```text
+study/
+|-- run-quality-method-a.py
+|-- run-quality-method-b.py
+|-- rerun-quality-method-a.py
+|-- run-efficiency.py
+|-- outputs-quality-method-a/
+|-- outputs-quality-method-b/
+|-- outputs-quality-rerun/
+`-- outputs-efficiency/
+```
+
+Instead, separate and order the objects, then keep each one's work together:
+
+```text
+study/
+|-- 01-quality/
+|   |-- run.py
+|   |-- evaluate.py
+|   |-- matrix.yaml
+|   `-- outputs/
+|       |-- runs/
+|       `-- summary/
+`-- 02-efficiency/
+    |-- run.py
+    |-- matrix.yaml
+    `-- outputs/
+        |-- runs/
+        `-- summary/
+```
+
+Choose script count by coherent responsibility; represent variants and repeated runs as parameters, manifest rows, or leaves beneath the object's single output root.
