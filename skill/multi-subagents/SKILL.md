@@ -5,24 +5,24 @@ description: Use multiple subagents in bounded GAN-style adversarial loops to st
 
 # Multi-Subagents
 
-## Purpose
+## Core Model
 
 A strong model can execute a weak plan perfectly and then rationalize the result. Apply adversarial pressure before implementation and after it, while keeping execution focused.
 
-## Organization
+### Roles and Effort
 
 ```text
-Strongest available GPT Chair
-|-- Plan: Chair drafts <-> DeepSeek Challenger attacks
-|-- Execute: DeepSeek Worker(s) implement
+GPT-5.6-sol Chair (`xhigh`: plan, attack, adjudicate)
+|-- Plan: Chair drafts <-> GPT-5.6-sol Challenger (`xhigh`) attacks
+|-- Execute: GPT-5.6-sol Worker(s) (`high`) implement
 `-- Check
     |-- Reproducible checks
-    `-- GPT Chair attacks <-> DeepSeek Executor defends
+    `-- Chair attacks <-> GPT-5.6-sol Executor (`high`) defends or fixes
 ```
 
-The Chair retains the user goal, inspects the project, runs checks, adjudicates evidence, and reports. It must not silently replace DeepSeek as the code writer.
+Keep the Chair responsible for the user goal, project inspection, checks, adjudication, and reporting, but never implementation writing. Assign one writer per workspace at a time: the Worker during Execute and the Executor during Check. Use a fresh GPT-5.6-sol Reviewer with `max` effort only to examine a high-impact evidence conflict independently.
 
-## Shared Adversarial Loop
+### Shared Adversarial Loop
 
 1. **Claim:** The responsible side presents a plan or result with its assumptions and evidence.
 2. **Attack:** The challenger targets concrete claims with counterexamples, missing evidence, failure modes, or a better alternative.
@@ -31,35 +31,30 @@ The Chair retains the user goal, inspects the project, runs checks, adjudicates 
 
 Stop when no new evidence appears and never exceed three rounds. The Chair decides by evidence, not votes. Escalate an unresolved high-impact dispute to the user with the decision, options, evidence, consequences, and recommendation.
 
-## Plan
+## Workflow
+
+### Plan
 
 Inspect the project first. For clear, reversible, mechanically verifiable work, the Chair makes a concise plan alone.
 
-Otherwise:
+For a non-trivial Plan, read [the planning reference](references/plan.md) completely before drafting. Draft a grounded design view and a concise user-facing report, spawn the Challenger with both and the reference, run the shared adversarial loop, and adopt the best-supported plan.
 
-1. The Chair drafts the plan.
-2. Call `ask_deepseek` as the Challenger.
-3. Run the shared adversarial loop.
-4. The Chair adopts the best-supported plan.
+### Execute
 
-## Execute
+Spawn the Worker with the adopted plan, scope and non-goals, project constraints, and acceptance checks.
 
-Use `run_deepseek_worker`. Give it the adopted plan, scope and non-goals, project constraints, and acceptance checks. DeepSeek is the sole code writer.
+Spawn multiple Workers only for two or three independently implementable tasks in distinct worktrees. Keep one writer per workspace.
 
-Use `run_deepseek_workers` only for two or three independently implementable tasks in distinct worktrees. Keep one writer per workspace.
+The Chair runs checks and returns concrete failures to the Worker for repair. Retry the subagent once if unavailable; the Chair must never silently take over implementation.
 
-The Chair runs checks and returns concrete failures to DeepSeek for repair. If integration needs code changes, dispatch another bounded DeepSeek task. Retry DeepSeek once if unavailable; never silently fall back to GPT implementation.
-
-## Check
+### Check
 
 Run reproducible checks first: tests, builds, type or lint checks, expected CLI output, experiment reruns, data invariants, links, rendering, or interaction checks.
 
-The GPT Chair attacks the result against the original goal, adopted plan, actual diff or artifacts, and check evidence. The DeepSeek Executor defends or fixes it; the Chair rechecks through the shared adversarial loop.
+Attack and adjudicate the result against the original goal, adopted plan, actual diff or artifacts, and check evidence. Have the Executor defend it with evidence or make bounded fixes, then have the Chair rerun the checks and continue the shared adversarial loop.
 
-Route implementation defects back to Execute, plan defects back to Plan, and unresolved authority or value decisions to the user.
-
-For high-risk work, optionally add a fresh GPT Reviewer as an escalation, not as the default path.
+Let the Executor repair bounded implementation defects during Check. Route plan defects back to Plan, defects requiring broad rework back to Execute, and unresolved authority or value decisions to the user. For high-risk work, add the fresh Reviewer only as an escalation, not as the default path.
 
 ## Guardrails
 
-Use `high` effort by default and `max` only for difficult decisions. Use clean allowlisted Git worktrees, never send secrets, and keep the team as small as possible while still producing new evidence.
+Use clean allowlisted Git worktrees, never send secrets, and keep the team as small as possible while still producing new evidence.

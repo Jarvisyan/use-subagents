@@ -1,6 +1,6 @@
 # Multi-Subagents
 
-> 用一个强 GPT 主 Agent 主持决策，让 GPT 与 DeepSeek 在 Plan 和 Check 阶段进行有限轮次的攻防，由 DeepSeek V4 Pro 负责具体实现。
+> 当前默认配置由 GPT-5.6-sol 同时承担 Chair、Challenger、Worker 和 Executor，在 Plan 与 Check 阶段进行有限轮次的 GAN 式攻防；原 GPT + DeepSeek 配置保留为可恢复的备份。
 
 ## 1. 为什么需要它
 
@@ -20,18 +20,21 @@
 
 ```text
 用户
-`-- GPT Chair：理解目标、组织攻防、依据证据裁决
+`-- GPT-5.6-sol Chair（xhigh）：理解目标、组织攻防、依据证据裁决
     |-- 1. Plan
-    |   `-- Chair 提出草稿 -> DeepSeek 攻击 -> Chair 防守或修订
+    |   `-- Chair 提出草稿 -> GPT Challenger（xhigh）攻击 -> Chair 防守或修订
     |-- 2. Execute
-    |   |-- DeepSeek Worker：默认唯一实现者
-    |   `-- 更多 DeepSeek Workers：仅用于独立 worktree
+    |   |-- GPT Worker（high）：当前工作区唯一实现者
+    |   `-- 更多 GPT Workers：仅用于相互独立的 worktree
     `-- 3. Check
         |-- 可复现检查
-        `-- GPT Chair 攻击 -> DeepSeek Executor 防守或修复
+        |-- GPT Chair（xhigh）攻击 -> GPT Executor（high）防守或修复
+        `-- Fresh GPT Reviewer（max）：仅升级审查高影响证据冲突
 ```
 
-GPT Chair 保留用户目标和全局上下文。它可以调查项目、准备 worktree、运行测试和整合结果，但不应悄悄接管代码实现；需要写代码时，继续派给 DeepSeek Worker。
+GPT Chair 保留用户目标和全局上下文。它可以调查项目、准备 worktree、运行测试和整合结果，但不应接管实现写作。Execute 由 Worker 写入；Check 若需要有界修复，则由 Executor 写入，同时仍坚持一个工作区同一时间只有一个 Writer。
+
+当前默认配置见 [`skill/multi-subagents/SKILL.md`](skill/multi-subagents/SKILL.md)。原始 GPT Chair + DeepSeek Challenger/Worker/Executor 配置完整保存在 [`skill/multi-subagents/SKILL.deepseek-backup.md`](skill/multi-subagents/SKILL.deepseek-backup.md)，便于套餐或成本策略变化后恢复。
 
 ## 3. Plan：有限轮次的对抗规划
 
@@ -40,16 +43,16 @@ GPT Chair 保留用户目标和全局上下文。它可以调查项目、准备 
 当存在多条合理路线、错误返工昂贵、关键假设不稳定或任务难以验证时，启动对抗规划：
 
 ```text
-Chair：基于目标、约束和项目事实提出 Plan 草稿
+Chair（xhigh）：基于目标、约束和项目事实提出 Plan 草稿
    |
-DeepSeek Challenger：定点攻击假设、反例、失败模式和验证缺口
+GPT Challenger（xhigh）：定点攻击假设、反例、失败模式和验证缺口
    |
 Chair：承认有效攻击并修订，或提供新证据防守
    |
-DeepSeek Challenger：仅在还能提供新证据时继续反驳
+GPT Challenger：仅在还能提供新证据时继续反驳
 ```
 
-攻防不要求双方先独立写一份完整方案。Chair 负责提出和收敛方案，DeepSeek 负责施加对抗压力。默认两轮、最多三轮；目标是暴露盲区，不是强迫达成共识，也不是按票数决定路线。
+非平凡计划在起草前完整读取 [`references/plan.md`](skill/multi-subagents/references/plan.md)，把目标、关键分析对象、实施方法和决策后果组织在一起。Chair 负责提出和收敛方案，Challenger 负责施加对抗压力。只有还能增加新证据时才继续，最多三轮；目标是暴露盲区，不是强迫达成共识，也不是按票数决定路线。
 
 当继续辩论已经不能产生新证据时，Chair 停止讨论：
 
@@ -66,34 +69,34 @@ DeepSeek Challenger：仅在还能提供新证据时继续反驳
 `-- Chair 的推荐及理由
 ```
 
-## 4. Execute：只让 DeepSeek 实现
+## 4. Execute：让 GPT Worker 专注实现
 
-计划确定后，DeepSeek V4 Pro 是唯一代码 Writer。
+计划确定后，GPT-5.6-sol Worker 使用 `high` 推理强度实现。在 Execute 阶段，它是对应工作区的唯一代码 Writer。
 
 ### 一个实现任务
 
-Chair 调用 `run_deepseek_worker`，提供：
+Chair 创建一个 GPT Worker，并提供：
 
 - 已采用的 Plan；
 - 实现范围和非目标；
 - 项目约束；
 - 完成标准和后续检查。
 
-Worker 可以自主读取和编辑指定工作区，但首版不允许使用终端、网络、外部目录或递归 subagent。完成后，由 Chair 运行测试；若失败，把具体错误证据重新交给 DeepSeek 修复。
+Worker 在任务授权和工作区边界内读取、编辑并完成实现。完成后，由 Chair 运行测试；若失败，把具体错误证据重新交给同一 Worker 修复。
 
 ### 多个实现任务
 
-只有子任务可以独立实现、独立验收时，才调用 `run_deepseek_workers`：
+只有子任务可以独立实现、独立验收时，才创建多个 Workers：
 
 ```text
-独立任务 A -> DeepSeek Worker A -> worktree A
-独立任务 B -> DeepSeek Worker B -> worktree B
-独立任务 C -> DeepSeek Worker C -> worktree C
+独立任务 A -> GPT Worker A -> worktree A
+独立任务 B -> GPT Worker B -> worktree B
+独立任务 C -> GPT Worker C -> worktree C
 ```
 
 同一或相互嵌套的工作区不允许同时存在多个 Writer。并行省的是高价模型成本和墙上时间，并不天然节省总 token；耦合任务应交给一个 Worker。
 
-DeepSeek 不可用时只重试一次，不应静默切换为 GPT 实现。
+Worker 不可用时只重试一次，Chair 不应静默接管实现。
 
 ## 5. Check：让结果经受攻击
 
@@ -102,14 +105,14 @@ Check 先做可复现检查，再进行模型攻防。所谓可复现检查，�
 ```text
 可复现检查
 -> GPT Chair 攻击 Plan 与实现
--> DeepSeek Executor 用代码、diff 和测试证据防守或修复
+-> GPT Executor 用代码、diff 和测试证据防守或进行有界修复
 -> GPT Chair 根据新证据重新攻击或通过
 -> Chair 裁决
 ```
 
-GPT Chair 直接切换到攻击者立场，对照原始目标、采用的 Plan、实际产物和检查结果寻找偏差；DeepSeek Executor 负责举证防守或修复。高风险任务可以额外启动 Fresh GPT Reviewer，但它不是默认流程。
+GPT Chair 使用 `xhigh` 推理强度切换到攻击者和裁决者立场，对照原始目标、采用的 Plan、实际产物和检查结果寻找偏差；GPT Executor 使用 `high` 举证防守或进行有界修复。高风险任务可以额外启动 Fresh GPT Reviewer，但它不是默认流程；只有独立审查高影响证据冲突时才使用 `max`。
 
-默认两轮、最多三轮。Review 分别判断：
+只有还能增加新证据时才继续，最多三轮。Review 分别判断：
 
 1. Plan 是否真正满足原始目标；
 2. 实现是否忠实满足 Plan；
@@ -118,7 +121,9 @@ GPT Chair 直接切换到攻击者立场，对照原始目标、采用的 Plan�
 
 计划正确但实现偏离，返回 Execute；实现忠实但 Plan 错误，返回 Plan；高影响争议仍无法解决，则把证据包交给用户。
 
-## 6. 为什么 DeepSeek 原来不能编辑文件
+## 6. DeepSeek 备份配置与桥接能力
+
+当前默认 skill 不调用 DeepSeek，但仓库继续保留已验证的 DeepSeek 文本审查与受限代码编辑能力。需要恢复异构模型协作时，以 `SKILL.deepseek-backup.md` 为协议基线，并使用下面的 MCP 与 Worker 桥接。
 
 DeepSeek API 本身只是一个推理接口：
 
@@ -174,11 +179,13 @@ DeepSeek 官方支持以 V4 Pro 作为 OpenCode 等 coding agent 的后端；当
 
 ## 7. 全局安装
 
-DeepSeek 的开发源码和 Skill 只保存在本项目。Codex 全局目录通过 Windows 目录联接指向这些源码，因此这里只维护一份，修改后无需再次复制同步：
+DeepSeek 集成源码、当前 GPT skill 与 DeepSeek 备份协议都保存在本项目。Codex 全局目录通过 Windows 目录联接指向这些源码，因此这里只维护一份，修改后无需再次复制同步：
 
 ```text
 本项目
 |-- skill/multi-subagents/SKILL.md
+|-- skill/multi-subagents/SKILL.deepseek-backup.md
+|-- skill/multi-subagents/references/plan.md
 |-- integrations/deepseek-mcp/
 |-- integrations/deepseek-worker/
 `-- integrations/install-global.ps1
@@ -299,12 +306,17 @@ Linux 的 MCP 配置还需把 `DEEPSEEK_OPENCODE_BIN` 加入 `env_vars`。项目
 当前版本已经具备：
 
 ```text
-Plan：GPT + DeepSeek 有限轮次攻防
-Execute：一个或多个隔离的 DeepSeek V4 Pro Workers
-Check：可复现检查 + GPT Chair 与 DeepSeek 有限轮次攻防
+默认 GPT 配置
+|-- Plan：GPT Chair（xhigh）与 GPT Challenger（xhigh）有限轮次攻防
+|-- Execute：一个或多个 GPT Workers（high）
+`-- Check：可复现检查 + GPT Chair（xhigh）与 GPT Executor（high）
+    `-- Fresh GPT Reviewer（max）：仅用于高影响证据冲突
+
+保留的异构配置
+`-- GPT Chair + DeepSeek Challenger/Worker/Executor
 ```
 
-它仍是一个轻量实验版本。首版有意不加入固定角色编制、复杂任务 schema、动态模型权重或自动淘汰；只有真实使用暴露出明确问题时，再增加对应约束。
+当前全 GPT 配置是一个可回退的试用版本；DeepSeek 桥接、Worker 和安全边界仍保留并继续可用。两套配置共享同一套 Claim、Attack、Defend/Revise、Rebut 协议，以及最多三轮、以证据裁决的停止规则。
 
 ## 参考
 
