@@ -7,16 +7,16 @@ import {
 } from "./worker.mjs";
 
 const SERVER_NAME = "deepseek-bridge";
-const SERVER_VERSION = "0.3.0";
+const SERVER_VERSION = "0.4.0";
 const DEFAULT_BASE_URL = "https://api.deepseek.com";
 const DEFAULT_MODEL = "deepseek-v4-pro";
 const MAX_CONCURRENT_REQUESTS = 2;
 const MAX_CONCURRENT_WORKERS = 3;
 const MAX_RPC_LINE_BYTES = 256 * 1024;
 const MAX_INPUT_BYTES = 160 * 1024;
-const MAX_PROVIDER_RESPONSE_BYTES = 8 * 1024 * 1024;
+const MAX_PROVIDER_STREAM_BYTES = 128 * 1024 * 1024;
+const MAX_ANSWER_BYTES = 16 * 1024 * 1024;
 const MAX_OUTPUT_TOKENS = 384000;
-const DEFAULT_OUTPUT_TOKENS = MAX_OUTPUT_TOKENS;
 const ALLOWED_MODELS = new Set([DEFAULT_MODEL]);
 const ALLOWED_ROLES = new Set([
   "planner",
@@ -56,13 +56,6 @@ const TOOL = {
         type: "string",
         enum: [...ALLOWED_EFFORTS],
         default: "high",
-      },
-      max_tokens: {
-        type: "integer",
-        minimum: 1,
-        maximum: MAX_OUTPUT_TOKENS,
-        description:
-          "Optional hard output ceiling. Defaults to the provider maximum of 384,000; reasoning effort controls thinking depth separately.",
       },
     },
   },
@@ -220,7 +213,6 @@ function validateArguments(value) {
     "context",
     "role",
     "reasoning_effort",
-    "max_tokens",
   ]);
   for (const key of Object.keys(value)) {
     if (!allowedKeys.has(key)) {
@@ -232,7 +224,6 @@ function validateArguments(value) {
   const context = value.context ?? "";
   const role = value.role ?? "challenger";
   const reasoningEffort = value.reasoning_effort ?? "high";
-  const maxTokens = value.max_tokens ?? DEFAULT_OUTPUT_TOKENS;
 
   if (typeof prompt !== "string" || prompt.trim().length === 0) {
     throw new Error("prompt must be a non-empty string.");
@@ -256,15 +247,8 @@ function validateArguments(value) {
   if (!ALLOWED_EFFORTS.has(reasoningEffort)) {
     throw new Error("reasoning_effort is unsupported.");
   }
-  if (
-    !Number.isInteger(maxTokens) ||
-    maxTokens < 1 ||
-    maxTokens > MAX_OUTPUT_TOKENS
-  ) {
-    throw new Error("INVALID_INPUT: max_tokens is outside the allowed range.");
-  }
 
-  return { prompt, context, role, reasoningEffort, maxTokens };
+  return { prompt, context, role, reasoningEffort };
 }
 
 function baseUrl(apiKey) {
@@ -299,13 +283,24 @@ function baseUrl(apiKey) {
   return parsed.origin;
 }
 
-function timeoutMs() {
+function hardTimeoutMs() {
   const parsed = Number.parseInt(
-    process.env.DEEPSEEK_REQUEST_TIMEOUT_MS ?? "240000",
+    process.env.DEEPSEEK_REQUEST_TIMEOUT_MS ?? "14100000",
     10,
   );
-  if (!Number.isFinite(parsed) || parsed < 1000 || parsed > 300000) {
-    return 240000;
+  if (!Number.isFinite(parsed) || parsed < 1000 || parsed > 14100000) {
+    return 14100000;
+  }
+  return parsed;
+}
+
+function idleTimeoutMs() {
+  const parsed = Number.parseInt(
+    process.env.DEEPSEEK_IDLE_TIMEOUT_MS ?? "300000",
+    10,
+  );
+  if (!Number.isFinite(parsed) || parsed < 1000 || parsed > 600000) {
+    return 300000;
   }
   return parsed;
 }
@@ -319,47 +314,191 @@ function redact(value, secret) {
   return safe.slice(0, 500);
 }
 
-async function readJsonWithLimit(response, controller) {
+async function readSseStream(response, controller, resetIdle) {
   if (!response.body) {
     throw new Error("BAD_RESPONSE: DeepSeek returned an empty response.");
   }
-  const declaredLength = Number.parseInt(
-    response.headers.get("content-length") ?? "0",
-    10,
-  );
-  if (
-    Number.isFinite(declaredLength) &&
-    declaredLength > MAX_PROVIDER_RESPONSE_BYTES
-  ) {
-    controller.abort();
-    throw new Error("BAD_RESPONSE: DeepSeek response exceeded the size limit.");
-  }
 
   const reader = response.body.getReader();
-  const chunks = [];
+  const decoder = new TextDecoder("utf-8", { fatal: false });
+  let buffer = "";
   let totalBytes = 0;
+  let answerBytes = 0;
+  const contentParts = [];
+  let model = DEFAULT_MODEL;
+  let usage = undefined;
+  let finishReason = undefined;
+  let hasContent = false;
+  let streamDone = false;
+
   while (true) {
     const { done, value } = await reader.read();
     if (done) {
       break;
     }
+    resetIdle();
     totalBytes += value.byteLength;
-    if (totalBytes > MAX_PROVIDER_RESPONSE_BYTES) {
+    if (totalBytes > MAX_PROVIDER_STREAM_BYTES) {
       controller.abort();
       throw new Error(
-        "BAD_RESPONSE: DeepSeek response exceeded the size limit.",
+        "BAD_RESPONSE: DeepSeek response stream exceeded the size limit.",
       );
     }
-    chunks.push(value);
+    buffer += decoder.decode(value, { stream: true });
+
+    // Process complete SSE events (separated by blank lines)
+    while (true) {
+      const blankIndex = buffer.search(/\r?\n\r?\n/);
+      if (blankIndex === -1) {
+        break;
+      }
+      const match = buffer.match(/^([\s\S]*?)\r?\n\r?\n/);
+      if (!match) {
+        break;
+      }
+      const eventText = match[1];
+      buffer = buffer.slice(match[0].length);
+
+      const dataLines = [];
+      for (const rawLine of eventText.split(/\r?\n/)) {
+        const line = rawLine.replace(/\r$/, "");
+        if (line.startsWith(":")) {
+          // keep-alive comment, skip
+          continue;
+        }
+        if (line.startsWith("data:")) {
+          const value = line.slice(5);
+          dataLines.push(value.startsWith(" ") ? value.slice(1) : value);
+        }
+      }
+
+      if (dataLines.length === 0) {
+        continue;
+      }
+
+      const jsonText = dataLines.join("\n");
+      if (jsonText === "[DONE]") {
+        streamDone = true;
+        break;
+      }
+
+      let chunk;
+      try {
+        chunk = JSON.parse(jsonText);
+      } catch {
+        throw new Error(
+          "BAD_RESPONSE: DeepSeek returned invalid SSE JSON.",
+        );
+      }
+
+      // Collect model from any chunk that has it
+      if (
+        typeof chunk?.model === "string" &&
+        ALLOWED_MODELS.has(chunk.model)
+      ) {
+        model = chunk.model;
+      }
+
+      // Collect usage from ending chunk
+      if (chunk?.usage && typeof chunk.usage === "object") {
+        usage = chunk.usage;
+      }
+
+      // Collect finish_reason
+      const choiceFinish = chunk?.choices?.[0]?.finish_reason;
+      if (typeof choiceFinish === "string" && choiceFinish !== "null") {
+        finishReason = choiceFinish;
+      }
+
+      // Accumulate content delta (ignore reasoning_content)
+      const delta = chunk?.choices?.[0]?.delta;
+      if (delta && typeof delta.content === "string" && delta.content.length > 0) {
+        answerBytes += Buffer.byteLength(delta.content, "utf8");
+        if (answerBytes > MAX_ANSWER_BYTES) {
+          controller.abort();
+          throw new Error(
+            "BAD_RESPONSE: DeepSeek final answer exceeded the size limit.",
+          );
+        }
+        contentParts.push(delta.content);
+        hasContent = true;
+      }
+    }
+    if (streamDone) {
+      await reader.cancel();
+      break;
+    }
   }
 
-  const bytes = new Uint8Array(totalBytes);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
+  // Flush any remaining decoder state
+  buffer += decoder.decode();
+
+  // Handle residual event (no trailing blank line)
+  if (!streamDone && buffer.trim()) {
+    const dataLines = [];
+    for (const rawLine of buffer.split(/\r?\n/)) {
+      const line = rawLine.replace(/\r$/, "");
+      if (line.startsWith(":")) {
+        continue;
+      }
+      if (line.startsWith("data:")) {
+        const value = line.slice(5);
+        dataLines.push(value.startsWith(" ") ? value.slice(1) : value);
+      }
+    }
+
+    if (dataLines.length > 0) {
+      const jsonText = dataLines.join("\n");
+      if (jsonText !== "[DONE]") {
+        let chunk;
+        try {
+          chunk = JSON.parse(jsonText);
+        } catch {
+          throw new Error(
+            "BAD_RESPONSE: DeepSeek returned invalid SSE JSON.",
+          );
+        }
+
+        if (
+          typeof chunk?.model === "string" &&
+          ALLOWED_MODELS.has(chunk.model)
+        ) {
+          model = chunk.model;
+        }
+        if (chunk?.usage && typeof chunk.usage === "object") {
+          usage = chunk.usage;
+        }
+        const choiceFinish = chunk?.choices?.[0]?.finish_reason;
+        if (typeof choiceFinish === "string" && choiceFinish !== "null") {
+          finishReason = choiceFinish;
+        }
+        const delta = chunk?.choices?.[0]?.delta;
+        if (delta && typeof delta.content === "string" && delta.content.length > 0) {
+          answerBytes += Buffer.byteLength(delta.content, "utf8");
+          if (answerBytes > MAX_ANSWER_BYTES) {
+            controller.abort();
+            throw new Error(
+              "BAD_RESPONSE: DeepSeek final answer exceeded the size limit.",
+            );
+          }
+          contentParts.push(delta.content);
+          hasContent = true;
+        }
+      }
+    }
   }
-  return JSON.parse(new TextDecoder().decode(bytes));
+
+  const content = contentParts.join("");
+  if (!hasContent || content.length === 0) {
+    throw new Error("BAD_RESPONSE: DeepSeek returned no final answer.");
+  }
+
+  return {
+    content,
+    model,
+    usage,
+    finishReason,
+  };
 }
 
 async function askDeepSeek(args, requestId) {
@@ -370,7 +509,7 @@ async function askDeepSeek(args, requestId) {
     );
   }
 
-  const { prompt, context, role, reasoningEffort, maxTokens } =
+  const { prompt, context, role, reasoningEffort } =
     validateArguments(args);
   const userContent = context
     ? `${prompt}\n\nContext supplied by the caller:\n${context}`
@@ -379,7 +518,41 @@ async function askDeepSeek(args, requestId) {
   const requestState = { controller, cancelled: false };
   const requestKey = JSON.stringify(requestId);
   activeRequests.set(requestKey, requestState);
-  const timer = setTimeout(() => controller.abort(), timeoutMs());
+
+  const hardTimeout = hardTimeoutMs();
+  const idleTimeout = idleTimeoutMs();
+
+  let hardTimer;
+  let idleTimer;
+  let idleExpired = false;
+  let hardExpired = false;
+
+  const clearTimers = () => {
+    if (hardTimer) clearTimeout(hardTimer);
+    if (idleTimer) clearTimeout(idleTimer);
+  };
+
+  const resetIdle = () => {
+    if (idleTimer && !idleExpired && !hardExpired) {
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        idleExpired = true;
+        controller.abort();
+      }, idleTimeout);
+    }
+  };
+
+  // Start hard timeout (does not reset)
+  hardTimer = setTimeout(() => {
+    hardExpired = true;
+    controller.abort();
+  }, hardTimeout);
+
+  // Start idle timeout
+  idleTimer = setTimeout(() => {
+    idleExpired = true;
+    controller.abort();
+  }, idleTimeout);
 
   try {
     const response = await fetch(`${baseUrl(apiKey)}/chat/completions`, {
@@ -397,8 +570,8 @@ async function askDeepSeek(args, requestId) {
         ],
         thinking: { type: "enabled" },
         reasoning_effort: reasoningEffort,
-        max_tokens: maxTokens,
-        stream: false,
+        max_tokens: MAX_OUTPUT_TOKENS,
+        stream: true,
       }),
       signal: controller.signal,
     });
@@ -417,47 +590,42 @@ async function askDeepSeek(args, requestId) {
       throw new Error("UPSTREAM_ERROR: DeepSeek rejected the request.");
     }
 
-    let body;
+    let sseResult;
     try {
-      body = await readJsonWithLimit(response, controller);
-    } catch (responseError) {
+      sseResult = await readSseStream(response, controller, resetIdle);
+    } catch (sseError) {
       if (
-        responseError?.message?.startsWith("BAD_RESPONSE:")
+        sseError?.message?.startsWith("BAD_RESPONSE:")
       ) {
-        throw responseError;
+        throw sseError;
       }
-      throw new Error("BAD_RESPONSE: DeepSeek returned invalid JSON.");
+      throw new Error("BAD_RESPONSE: DeepSeek returned an invalid stream.");
     }
 
-    const answer = body?.choices?.[0]?.message?.content;
-    if (typeof answer !== "string" || answer.length === 0) {
+    const { content, model, usage, finishReason } = sseResult;
+    if (typeof content !== "string" || content.length === 0) {
       throw new Error("BAD_RESPONSE: DeepSeek returned no final answer.");
     }
 
-    const finishReason =
-      typeof body?.choices?.[0]?.finish_reason === "string"
-        ? body.choices[0].finish_reason
-        : undefined;
-    const usage = body?.usage;
     return {
-      answer,
-      model:
-        typeof body?.model === "string" && ALLOWED_MODELS.has(body.model)
-          ? body.model
-          : DEFAULT_MODEL,
+      answer: content,
+      model,
       finish_reason: finishReason,
       truncated: finishReason === "length",
       usage: normalizeUsage(usage),
     };
   } catch (requestError) {
-    if (
-      requestError?.name === "AbortError" ||
-      controller.signal.aborted
-    ) {
+    if (requestState.cancelled) {
+      throw new Error("CANCELLED: DeepSeek request was cancelled.");
+    }
+    if (idleExpired) {
       throw new Error(
-        requestState.cancelled
-          ? "CANCELLED: DeepSeek request was cancelled."
-          : "UPSTREAM_TIMEOUT: DeepSeek request timed out.",
+        "UPSTREAM_IDLE_TIMEOUT: DeepSeek response became idle.",
+      );
+    }
+    if (hardExpired) {
+      throw new Error(
+        "UPSTREAM_TIMEOUT: DeepSeek request timed out.",
       );
     }
     if (
@@ -467,11 +635,19 @@ async function askDeepSeek(args, requestId) {
     ) {
       throw requestError;
     }
+    if (
+      requestError?.name === "AbortError" ||
+      controller.signal.aborted
+    ) {
+      throw new Error(
+        "UPSTREAM_TIMEOUT: DeepSeek request timed out.",
+      );
+    }
     throw new Error(
       "UPSTREAM_UNAVAILABLE: no valid DeepSeek response was received.",
     );
   } finally {
-    clearTimeout(timer);
+    clearTimers();
     activeRequests.delete(requestKey);
   }
 }
@@ -737,3 +913,6 @@ process.stdin.on("data", (chunk) => {
     handleLine(line);
   }
 });
+
+// Prevent the process from exiting before the first message arrives over the pipe.
+process.stdin.resume();

@@ -16,9 +16,17 @@ GPT Chair
 
 DeepSeek 官方支持把 V4 Pro 接入 OpenCode 等 coding agent。本项目固定使用 OpenCode `1.18.4` 作为工具循环运行时，并通过环境变量传入 `DEEPSEEK_API_KEY`。
 
-`ask_deepseek` 对 `high` 和 `max` 都默认采用 DeepSeek V4 Pro 官方的 384K 最大输出上限；`reasoning_effort` 独立控制思考深度。`max_tokens` 仍可在单次调用中显式调低，但它只是硬天花板，不控制回答应有多详细。
+`ask_deepseek` 固定采用 DeepSeek V4 Pro 官方的 384K 最大输出上限，`max_tokens` 参数不对外公开，调用方不能调低。`reasoning_effort` 独立控制思考深度。桥接通过 SSE（Server-Sent Events）流式增量读取 `chat/completions` 响应，按空行分隔事件、多 `data:` 行拼接、支持 `: keep-alive` 注释和 `data: [DONE]`，并以 `TextDecoder` 流式模式正确处理 UTF-8 跨 chunk。
 
 桥接会返回 `finish_reason` 和 `truncated`。若默认 384K 仍然耗尽，调用方必须把响应视为不完整证据并拆分任务，不能直接使用部分输出作出结论。
+
+### 超时控制
+
+- `DEEPSEEK_REQUEST_TIMEOUT_MS`：硬总时限，默认 14,100,000 ms（3h55m），允许范围 1,000..14,100,000。不重置。
+- `DEEPSEEK_IDLE_TIMEOUT_MS`：空闲超时，默认 300,000 ms（5min），允许范围 1,000..600,000。每次收到网络 chunk 重置。
+- 用户取消优先报 `CANCELLED`；空闲超时报 `UPSTREAM_IDLE_TIMEOUT: DeepSeek response became idle.`；硬超时报 `UPSTREAM_TIMEOUT: DeepSeek request timed out.`。
+- Codex 全局 `config.toml` 中 `tool_timeout_sec` 应设为 `14400`（4h），确保不先于桥接硬超时终止。
+- 原始 SSE 流上限为 128 MiB，最终回答正文上限为 16 MiB；思考流只消费、不保留。分离限制可容纳长输出的 SSE/JSON 协议开销，同时约束实际驻留内存。
 
 ## 安全边界
 
@@ -36,7 +44,7 @@ Worker 只允许 `read/edit/glob/grep/list` 等工作区文件工具，并明确
 
 ## 安装与验证
 
-创建 Codex 全局目录联接：
+Windows 创建 Codex 全局目录联接：
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\integrations\install-global.ps1
@@ -44,7 +52,14 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\integrations\install-g
 
 该脚本让 `~/.codex/integrations/deepseek` 指向项目中的 `integrations/`，并让全局 `multi-subagents` Skill 指向项目 Skill 源码。此后只维护项目中的一份文件。
 
-Windows 默认使用锁定的 `opencode-windows-x64`。Linux/macOS 不需要本项目提供安装包：使用者自行安装 OpenCode，并把 `DEEPSEEK_OPENCODE_BIN` 设置为其可执行文件的绝对路径；Worker 会优先使用该路径。
+Linux 使用一键配置脚本：
+
+```bash
+chmod +x integrations/install-global.sh
+./integrations/install-global.sh --allowed-root /path/to/trusted/code
+```
+
+Windows 默认使用锁定的 `opencode-windows-x64`。Linux 脚本复用已经安装的 OpenCode，自动配置其绝对路径、全局软链接、密钥文件和 Codex MCP，并运行不联网的模拟测试。
 
 源码级验证：
 

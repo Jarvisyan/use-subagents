@@ -166,7 +166,7 @@ DeepSeek 官方支持以 V4 Pro 作为 OpenCode 等 coding agent 的后端；当
     `-- 单次最大输出：384K
 ```
 
-`reasoning_effort` 控制思考深度；`max_tokens` 只是本次调用的输出天花板，不是要求模型必须写到该长度。当前 `ask_deepseek` 对 `high` 和 `max` 都默认采用供应商允许的 384K 上限，再通过角色提示词要求回答只保留必要的主张、证据、分歧和建议。这样避免人为设置较小上限后截断、丢弃并重试。
+`reasoning_effort` 控制思考深度。`ask_deepseek` 固定使用供应商允许的 384K 最大输出上限，不对外暴露 `max_tokens` 参数；调用方不能人为调低，避免因预算不足导致截断、丢弃并重试。桥接通过 SSE 流式增量读取响应，无需等待完整响应后一次性解析。
 
 桥接仍会检查 `finish_reason: length` 和 `truncated: true`。若模型在供应商最大输出下仍被截断，这说明单个问题过大；该响应不能用于裁决，应拆分任务，而不是继续提高不存在的输出额度。
 
@@ -174,32 +174,60 @@ DeepSeek 官方支持以 V4 Pro 作为 OpenCode 等 coding agent 的后端；当
 
 ## 7. 全局安装
 
-DeepSeek 的开发源码和 Skill 只保存在本项目。Codex 全局目录通过 Windows 目录联接指向这些源码，因此这里只维护一份，修改后无需再次复制同步：
+DeepSeek 的开发源码和 Skill 只保存在本项目。Codex 全局目录通过 Windows 目录联接或 Linux 软链接指向这些源码，因此这里只维护一份，修改后无需再次复制同步：
 
 ```text
 本项目
 |-- skill/multi-subagents/SKILL.md
 |-- integrations/deepseek-mcp/
 |-- integrations/deepseek-worker/
-`-- integrations/install-global.ps1
+|-- integrations/install-global.ps1
+`-- integrations/install-global.sh
 ```
 
 ```text
 ~/.codex/skills/multi-subagents
-`-- junction -> 本项目/skill/multi-subagents
+`-- junction/symlink -> 本项目/skill/multi-subagents
 
 ~/.codex/integrations/deepseek
-`-- junction -> 本项目/integrations
+`-- junction/symlink -> 本项目/integrations
 ```
 
-全局安装命令：
+Windows 全局安装命令：
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File .\integrations\install-global.ps1
 ```
 
-用户级 `~/.codex/config.toml` 指向全局 MCP：
+### Linux 一键安装
+
+Linux 需要预先安装 Node.js 18+、Python 3 和 OpenCode 1.14.24+。脚本不会下载二进制，也不会调用真实 DeepSeek API；它会检查依赖、建立全局软链接、创建或复用密钥文件、备份并更新 Codex 配置，最后运行使用模拟 Provider 的本地测试。
+
+```bash
+chmod +x integrations/install-global.sh
+
+./integrations/install-global.sh \
+  --allowed-root /user/work/yanjie
+```
+
+`--allowed-root` 必须显式提供，可以重复传入多个可信代码根。OpenCode 或 Node 不在 `PATH` 时，可以分别使用 `--opencode-bin` 和 `--node-bin` 指定绝对路径：
+
+```bash
+./integrations/install-global.sh \
+  --allowed-root /srv/code \
+  --allowed-root /data/projects \
+  --node-bin /opt/node/bin/node \
+  --opencode-bin /opt/opencode/bin/opencode
+```
+
+密钥默认保存在 `~/.config/deepseek/env`，权限固定为 `600`。首次安装时，脚本优先使用当前环境里的 `DEEPSEEK_API_KEY`；交互式终端中也可以按静默提示输入。已有密钥文件可通过 `--api-key-file` 复用。脚本只替换 `config.toml` 中 DeepSeek MCP 的两个 section，修改前会创建带时间戳的备份，不会覆盖其他 Codex 配置。
+
+安装完成后必须完全重启 Codex。脚本默认只运行不产生 API 费用的模拟测试；真实 API 测试仍需单独手动执行。
+
+### Windows 手动配置参考
+
+Linux 应优先使用上面的脚本生成配置；下面是 Windows 或已经确保 Codex 主进程继承密钥时的手动配置结构：
 
 ```toml
 [mcp_servers.deepseek]
@@ -207,7 +235,7 @@ command = '<ABSOLUTE_NODE_PATH>'
 args = ['<USER_HOME>\.codex\integrations\deepseek\deepseek-mcp\server.mjs']
 env_vars = ["DEEPSEEK_API_KEY"]
 enabled_tools = ["ask_deepseek", "run_deepseek_worker", "run_deepseek_workers"]
-tool_timeout_sec = 930
+tool_timeout_sec = 14400
 default_tools_approval_mode = "approve"
 
 [mcp_servers.deepseek.env]
@@ -218,23 +246,17 @@ DEEPSEEK_ALLOWED_ROOTS = '<ABSOLUTE_TRUSTED_PROJECT_ROOT>'
 
 `approve` 会默认放行该 MCP 的普通工具调用，避免每次手动确认；它不会绕过 Codex 对密钥外发、危险写入等行为的安全审查。
 
-API key 只保存在本机环境变量 `DEEPSEEK_API_KEY`，不会写入 Skill、仓库或 `config.toml`。目录联接会让正文修改立即反映到全局路径，但 Codex 通常在新会话或重启后重新读取 Skill 元数据和 MCP 配置。
+`tool_timeout_sec = 14400`（4 小时）与桥接内部硬超时（默认 3h55m）匹配；若当前全局配置仍是旧值 `930`，需同步更新并重启 Codex，否则 Codex 可能过早终止长时间推理任务。
+
+桥接级超时通过环境变量控制：`DEEPSEEK_REQUEST_TIMEOUT_MS`（硬总时限，默认 14,100,000 ms / 3h55m，范围 1,000..14,100,000）和 `DEEPSEEK_IDLE_TIMEOUT_MS`（空闲超时，默认 300,000 ms / 5min，范围 1,000..600,000）。硬时限不重置；每次收到网络 chunk 重置空闲计时。用户取消优先报 `CANCELLED`；空闲超时报 `UPSTREAM_IDLE_TIMEOUT`；硬时限报 `UPSTREAM_TIMEOUT`。
+
+流式响应最多接收 128 MiB 原始 SSE 数据，最终返回正文最多保留 16 MiB；思考流会被消费但不保存。原始流上限高于旧版非流式限制，以容纳长输出中每个 SSE 事件附带的协议与 JSON 开销。
+
+API key 只保存在本机环境变量或权限为 `600` 的本机密钥文件中，不会写入 Skill、仓库或 `config.toml`。目录联接或软链接会让正文修改立即反映到全局路径，但 Codex 通常在新会话或重启后重新读取 Skill 元数据和 MCP 配置。
 
 ### Windows 与 Linux
 
-仓库不提交 OpenCode 二进制。Windows 安装脚本会根据锁文件下载当前验证版本，并创建目录联接；Linux 云服务器则由使用者按 OpenCode 官方方式安装，然后把绝对路径交给 Worker：
-
-```bash
-export DEEPSEEK_OPENCODE_BIN="$(command -v opencode)"
-export DEEPSEEK_API_KEY="..."
-
-ln -s /path/to/use-subagents/skill/multi-subagents \
-  ~/.codex/skills/multi-subagents
-ln -s /path/to/use-subagents/integrations \
-  ~/.codex/integrations/deepseek
-```
-
-Linux 的 MCP 配置还需把 `DEEPSEEK_OPENCODE_BIN` 加入 `env_vars`。项目不为不同系统分发安装包；操作系统只决定 OpenCode 的安装路径和全局链接方式，Skill 与桥接源码保持同一份。
+仓库不提交跨平台 OpenCode 二进制。Windows 安装脚本根据锁文件下载当前验证的 Windows 版本并创建目录联接；Linux 脚本复用使用者按 OpenCode 官方方式安装的版本，并创建软链接。两个系统共享同一份 Skill 与桥接源码，操作系统差异只留在运行时安装、路径和全局链接方式。
 
 ## 8. 安全边界
 
