@@ -1,43 +1,37 @@
 ---
 name: solid-vibe-coding
-description: Use for research or exploratory coding iterations where AI should work with minimal stepwise supervision while adversarial Plan and implementation-fidelity reviews support user decisions before and after execution.
+description: Use for research or exploratory coding iterations where AI should choose and design the most decision-critical next experiment, execute with minimal stepwise supervision, and adversarially check whether its implementation and result are trustworthy.
 ---
 
 # Solid Vibe Coding
 
 ## Objective
 
-Automate the research iteration without automating away judgment. Let the user leave stepwise supervision while retaining two decisions: whether the Plan is worth executing and whether the resulting evidence can be trusted as evidence about that Plan.
+Automate the research iteration without automating away judgment. Use adversarial planning to choose and design the most decision-critical next experiment: the prerequisite test whose failure could make downstream experiments useless. After execution, use adversarial checking against the accepted Plan to decide whether the result is trustworthy.
 
 ## Workflow
 
 ```text
-idea or question
-  -> adversarial Plan review
-  -> [user decides whether to execute]
+research problem
+  -> adversarially choose and design the most decision-critical experiment
+  -> [user decides from the Plan report whether to proceed]
   -> execution inside the accepted Plan
-  -> adversarial implementation-fidelity Check
-  -> [user decides whether to trust, repair, re-plan, or stop]
+  -> adversarial Check against the accepted Plan
+  -> [user decides from the Check report whether to trust, repair, re-plan, or stop]
 ```
 
-The main agent carries the goal and context through the whole iteration. A temporary Plan Challenger reviews the proposal before execution; a new temporary Check Challenger reviews implementation fidelity afterward. In either review, target the strongest unresolved flaw that could change the user's pending decision rather than maximizing issue count. The main agent defends or revises, then adjudicates by evidence. Run one to three rounds, continuing only while a consequential objection and a useful next step remain.
+The main agent carries the goal and context through the whole iteration. A temporary Plan Challenger participates in planning before execution; a new temporary Check Challenger audits the completed work afterward. Run each discussion for one to three evidence-driven rounds, continuing only while another round could change the Plan or the Check conclusion.
 
-## Plan — Decide Whether to Execute
+Before writing either report, build the complete low-level reasoning and evidence. Preserve the supporting detail needed for audit and reproduction in the document, but distill the chat report to the decision-relevant essentials. Organize both as a hierarchy of topics and subtopics rather than a flat list or chronology, connecting each topic's motivation, reasoning or evidence, limitations, and decision consequence. Make the chat self-contained for judgment, then provide exact document or artifact pointers for deeper detail.
 
-Before execution, turn the user's question into a coherent decision argument connecting the uncertainty, the proposed test, the evidence that would distinguish its outcomes, and the downstream action. Make clear what implementation must preserve and what it may decide so the argument can be audited later. Have the Plan Challenger attack the weakest link, then present the revised argument and any unresolved objection to the user. Execute only after the user accepts it.
+## Plan — Choose and Design the Next Experiment
+
+Start from the research problem and identify the gating uncertainty whose failure could make downstream experiments useless. Through debate, establish what experiment should resolve it, why its design can distinguish the relevant outcomes, how those outcomes change the next action, and the backbone—the fixed reference setup—and intended delta applied to it. Present the resulting Plan and any unresolved objection in the Plan report; execute only if the user decides to proceed.
 
 ## Execute
 
-Let the main agent execute directly or delegate as appropriate, resolving ordinary implementation details inside the accepted Plan. Return to Plan before changing the question or the evidence needed to answer it. Do not turn an unexpected result into implicit authority for more experiments.
+Execute the accepted Plan as written, directly or through delegation. Resolve ordinary implementation issues that do not change the experiment. If a blocking problem cannot be resolved within the Plan, report it to the user instead of changing the experiment silently.
 
-## Check — Audit Plan-to-Implementation Fidelity
+## Check — Decide Whether the Result Is Trustworthy
 
-Before interpreting results, reconstruct how the accepted Plan became the actual implementation, surfacing important choices and deviations with reproducible evidence. Have the Check Challenger attack the strongest reason this account or the resulting attribution could be wrong. Repair defects only while the accepted Plan still authorizes the work; otherwise return to Plan. Report whether the result can be attributed to the intended implementation, then pause for the user's decision.
-
-## Reporting
-
-First establish the complete reasoning and evidence; then rewrite it as a self-contained causal narrative around the few judgments the user must make. Use documents and artifacts only as supporting pointers after that narrative.
-
-## Scope
-
-Leave provider, execution topology, Git, and directory layout to task context. Use `experiment-management` for persistent experimental artifacts.
+Provide the Check Challenger with the accepted Plan, actual implementation, and experimental evidence. The Check Challenger compares the implementation with the Plan, examines how open choices were resolved, and identifies undeclared changes or evidence gaps that could make the result untrustworthy. The main agent may clarify with evidence, but Check produces findings rather than repairs: do not modify the implementation or rerun the experiment as a fix. Present the findings in the Check report, then let the user decide what comes next.
