@@ -62,25 +62,13 @@ Check 的目标是形成发现而不是自动修实验。即使结果 promising�
 
 两类报告都先建立完整的底层推理和证据，再按主题与子主题组织成用户容易判断的故事。文档保留审计和复现所需的细节；聊天汇报保留决策相关的要点，讲清动机、论证、证据、限制和后果，随后再给出精确的文档或产物指针。用户的工作是判断合理性，而不是替 AI 重新总结一遍。
 
-## 4. `experiment-management`：实验信息架构层
+## 4. `experiment-layout`：实验信息架构层
 
-对抗讨论解决“判断是否 solid”，但不能单独解决脚本与输出随迭代失控的问题。第二套 skill 负责让用户一眼看懂：
+对抗讨论解决“判断是否 solid”，但不能单独解决自动化产生的脚本和结果逐渐淹没用户的问题。第二套 skill 把实验目录设计成面向用户的层级：打开根目录能看到按顺序编号的 Plans；打开一个 Plan 能看到它包含的编号子实验；打开一个子实验能立刻找到按局部编号对应的测试脚本和最终结果。
 
-- 当前 Plan 包含哪些可独立判断的分析对象；
-- Plan 和各对象有哪些受支持的执行入口；
-- 哪些输出是主要证据；
-- 当前结论与下一道 Gate 是什么。
+脚本与输出使用相同的 `Plan.子实验.测试` 身份，使用户可以沿编号直接对应。共同支持一个结论的测试留在同一个子实验；能够单独判断的测试拆成新的子实验。seed、variant、stage、retry 和 helper 留在所属实验内部。正式输出默认只保留判断 Plan 所需的最终数据，结果解释集中在 Plan 级报告；中间结果仅在复现判断或继续任务确有需要时保留。
 
-它不强制 `current/`、`outputs/`、`src/` 等固定名字，而是约束语义关系：
-
-- 按分析对象组织，不按命令、Agent、seed、retry 或时间线组织；
-- 明确区分公开入口与内部实现；
-- 明确区分主要结果、支持证据和可再生成中间产物；
-- 一个 Plan 或对象允许有多个真正不同的执行入口，但必须在公开表面说明每个入口回答什么；
-- 参数化系统性 variants，避免复制脚本与输出树；
-- 下游对象通过上游 Gate 后再懒创建。
-
-这样文件系统承担的是“帮助用户快速判断”，而不是忠实展示 AI 做过的每一个动作。
+Skill 不强制 `scripts/`、`outputs/`、`src/` 等具体名称。它约束的是用户路径：目录按 Plan 和子实验展开，而不是按 AI 的操作时间线或处理阶段展开；未来实验真正开始后才创建，避免提前生成空目录。
 
 ## 5. 两套 Skill 如何配合
 
@@ -90,36 +78,21 @@ solid-vibe-coding
 ├── Execute：在已接受的 Plan 内推进
 └── Check：核对 Plan、实现与证据，并交给用户判断
 
-experiment-management
-├── 把 Plan 映射为分析对象与公开入口
-├── 把运行产物分成主要证据与支持材料
-└── 保持跨迭代的计划、报告、日志与清理可追溯
+experiment-layout
+├── 为 Plan 和子实验建立稳定的两级编号
+├── 让测试脚本与最终输出沿相同局部编号直接对应
+└── 突出入口与最终结果，下沉或省略中间产物
 ```
 
-通常由 `solid-vibe-coding` 驱动完整研究迭代；当任务会产生持久实验脚本、输出和报告时，再组合使用 `experiment-management`。后者不判断科学方案是否正确，前者也不规定具体目录布局。
+通常由 `solid-vibe-coding` 驱动完整研究迭代；当任务会产生持久实验脚本、输出和报告时，再组合使用 `experiment-layout`。后者不判断科学方案是否正确，前者也不规定具体目录布局。
 
-## 6. 可选 Provider Adapter：DeepSeek
+## 6. 源文件与同步边界
 
-仓库中现有的 DeepSeek bridge 已经验证了三类可选能力：
+这个仓库现在是通用 Codex 配置的单一源。`AGENTS.md`、`skill/solid-vibe-coding/` 与 `skill/experiment-layout/` 进入 Git，供不同机器同步；`~/.codex` 中的对应位置通过符号链接引用这里，不再维护第二份副本。
 
-- 用 `ask_deepseek` 提供文本 Challenger；
-- 用 `run_deepseek_worker` 让外部模型在受限工作区执行；
-- 用 `run_deepseek_workers` 并行处理互不重叠的执行任务。
+`integrations/` 与 `skill/cluster-routing/` 包含服务器专用的工具、路径和资源规则，因此保留在本地仓库目录中，但由 `.gitignore` 排除，不上传云端。外部模型或服务器工具仍可按本机配置显式使用，不成为两套通用 Skill 的依赖。
 
-它通过 OpenCode 为 DeepSeek 提供受限文件工具，并实现可信根、敏感文件拒绝、工作区写锁、超时和并行失败清理。它证明了外部 provider 可以接入这套角色契约，但不是 Solid Vibe Coding 的默认模型、唯一执行者或必要依赖。
-
-DeepSeek 是可选 provider，因此不在 `agents/openai.yaml` 中声明为必需依赖。只要相应 MCP 已可用，用户在任务中明确要求由 DeepSeek 担任 Challenger 或执行者即可。
-
-安装、配置、安全边界和验证方式见 [DeepSeek 执行桥接](integrations/deepseek-mcp/README.md)。现有安装脚本会同时链接两套新 skill；它们仍可脱离 DeepSeek adapter 独立使用。
-
-## 7. 当前草案状态
-
-当前仓库由两套 provider-neutral skill 构成：
-
-- `skill/solid-vibe-coding/`
-- `skill/experiment-management/`
-
-原 `multi-subagents` 原型已经由这两套职责更单一的 skill 取代。首版刻意不加入固定模型编制、任务难度路由、执行者限制、Git/worktree 流程或强制目录名。只有跨任务重复出现且无法由现有 meta 约束覆盖的问题，才值得进入通用 skill。
+原 `multi-subagents` 原型已经由职责更单一的 `solid-vibe-coding` 与 `experiment-layout` 取代。通用 Skill 只保留跨任务稳定的 meta 约束；服务器环境和 provider 实现留在本地配置层。
 
 ## 参考
 
@@ -127,10 +100,3 @@ DeepSeek 是可选 provider，因此不在 `agents/openai.yaml` 中声明为必�
 
 - [Codex 配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)
 - [Codex Subagents](https://learn.chatgpt.com/docs/agent-configuration/subagents)
-
-DeepSeek 可选适配器：
-
-- [DeepSeek coding-agent 集成指南](https://api-docs.deepseek.com/guides/coding_agents/)
-- [DeepSeek API](https://api-docs.deepseek.com/)
-- [OpenCode Agent 配置](https://opencode.ai/docs/agents/)
-- [OpenCode 权限模型](https://opencode.ai/docs/permissions/)

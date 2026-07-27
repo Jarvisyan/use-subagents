@@ -1,9 +1,0 @@
-{
-  "name": "deepseek-worker-runtime",
-  "private": true,
-  "version": "0.1.0",
-  "description": "Pinned local agent runtime used by the DeepSeek MCP bridge.",
-  "dependencies": {
-    "opencode-windows-x64": "1.18.4"
-  }
-}

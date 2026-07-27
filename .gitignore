@@ -17,8 +17,9 @@
 # Third-party repositories are local research inputs, not project dependencies.
 /references/local/
 
-# Pinned runtime dependencies are restored from package-lock.json.
-/integrations/deepseek-worker/node_modules/
+# Server-local integrations and cluster configuration are not cloud-synced.
+/integrations/
+/skill/cluster-routing/
 
 # Local documentation/tool caches
 /.tmp/

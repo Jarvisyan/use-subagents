@@ -1,4 +1,0 @@
-interface:
-  display_name: "Experiment Management"
-  short_description: "Keep experiment artifacts clear and traceable"
-  default_prompt: "Use $experiment-management to organize an experiment around clear decision objects, public entries, and primary evidence."

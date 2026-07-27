@@ -1,0 +1,4 @@
+interface:
+  display_name: "Experiment Layout"
+  short_description: "Keep experiment artifacts clear and traceable"
+  default_prompt: "Use $experiment-layout to organize Plans and subexperiments so their supported entries and final results are immediately discoverable."
