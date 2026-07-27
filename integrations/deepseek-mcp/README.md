@@ -1,24 +1,24 @@
 # DeepSeek 执行桥接
 
-该桥接让 Codex 中的 GPT Chair 可以调用 DeepSeek V4 Pro 完成实际文件修改，而不只是获取文本建议。
+该桥接让 Codex 的主对话模型可以调用 DeepSeek V4 Pro 获取 Challenger 意见或完成实际文件修改。
 
 ## 结构
 
 ```text
-GPT Chair
+主对话模型
 |-- ask_deepseek
 |   `-- 规划或审查意见；不访问文件
 |-- run_deepseek_worker
 |   `-- 一个 DeepSeek Worker 修改一个工作区
 `-- run_deepseek_workers
-    `-- 2-3 个 DeepSeek Worker 并行修改互不重叠的 worktree
+    `-- 2-3 个 DeepSeek Worker 并行修改互不重叠的工作区
 ```
 
 DeepSeek 官方支持把 V4 Pro 接入 OpenCode 等 coding agent。本项目固定使用 OpenCode `1.18.4` 作为工具循环运行时，并通过环境变量传入 `DEEPSEEK_API_KEY`。
 
-`ask_deepseek` 固定采用 DeepSeek V4 Pro 官方的 384K 最大输出上限，`max_tokens` 参数不对外公开，调用方不能调低。`reasoning_effort` 独立控制思考深度。桥接通过 SSE（Server-Sent Events）流式增量读取 `chat/completions` 响应，按空行分隔事件、多 `data:` 行拼接、支持 `: keep-alive` 注释和 `data: [DONE]`，并以 `TextDecoder` 流式模式正确处理 UTF-8 跨 chunk。
+`ask_deepseek` 不传自定义 `max_tokens`，由 provider 使用默认输出预算。`reasoning_effort` 独立控制思考深度。桥接通过 SSE（Server-Sent Events）流式增量读取 `chat/completions` 响应，按空行分隔事件、多 `data:` 行拼接、支持 `: keep-alive` 注释和 `data: [DONE]`，并以 `TextDecoder` 流式模式正确处理 UTF-8 跨 chunk。
 
-桥接会返回 `finish_reason` 和 `truncated`。若默认 384K 仍然耗尽，调用方必须把响应视为不完整证据并拆分任务，不能直接使用部分输出作出结论。
+桥接会返回 `finish_reason` 和 `truncated`。若 provider 默认预算耗尽，调用方必须把响应视为不完整证据并拆分任务，不能直接使用部分输出作出结论。
 
 ### 超时控制
 
@@ -40,7 +40,7 @@ Worker 只允许 `read/edit/glob/grep/list` 等工作区文件工具，并明确
 
 此外，Worker 只接受 `DEEPSEEK_ALLOWED_ROOTS` 预先允许范围内的 Git 仓库或 worktree 根目录。工作区若包含 OpenCode 项目配置或常见密钥文件（如 `.env`、PEM、私钥），桥接会拒绝启动。
 
-同一或重叠工作区不能并行运行多个 Writer。需要并行时，Chair 必须先准备独立 Git worktree；任一并行 Worker 失败时，整组 Worker 会先被终止并完成清理，再释放目录锁。
+同一或重叠工作区不能并行运行多个 Writer。需要并行时，主对话模型必须提供互不重叠的工作区；任一并行 Worker 失败时，整组 Worker 会先被终止并完成清理，再释放目录锁。
 
 ## 安装与验证
 
@@ -50,7 +50,9 @@ Windows 创建 Codex 全局目录联接：
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\integrations\install-global.ps1
 ```
 
-该脚本让 `~/.codex/integrations/deepseek` 指向项目中的 `integrations/`，并让全局 `multi-subagents` Skill 指向项目 Skill 源码。此后只维护项目中的一份文件。
+该脚本让 `~/.codex/integrations/deepseek` 指向项目中的 `integrations/`，并让全局 `solid-vibe-coding` 与 `experiment-management` 指向项目 Skill 源码。同名用户目录或指向其他位置的链接不会被覆盖。
+
+Linux 升级会先预检全部新旧路径，安装并验证两套新 Skill，最后才移除精确指向本仓库旧源码的 `multi-subagents` 软链接；任何碰撞都会在旧链接仍保留时失败。Windows 安装器只安全安装两套新 Skill，不自动删除旧 junction；确认新 Skill 可用后，应人工核验并清理旧 junction。
 
 Linux 使用一键配置脚本：
 

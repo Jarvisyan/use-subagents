@@ -1,0 +1,4 @@
+interface:
+  display_name: "Solid Vibe Coding"
+  short_description: "Run auditable AI-led research iterations"
+  default_prompt: "Use $solid-vibe-coding to plan, execute, and audit one research iteration with human decision gates."

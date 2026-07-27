@@ -1,337 +1,171 @@
-# Multi-Subagents
+# Solid Vibe Coding
 
-> 用一个强 GPT 主 Agent 主持决策，让 GPT 与 DeepSeek 在 Plan 和 Check 阶段进行有限轮次的攻防，由 DeepSeek V4 Pro 负责具体实现。
+> 一套基于作者自己科研工作流设计的 provider-neutral 方法：人只保留 Plan Gate 和 Check Gate，AI 自动完成中间的对抗规划、自适应执行、实现一致性审计和证据整理。
 
-## 1. 为什么需要它
+## 1. 设计来源：真实科研迭代，而不是抽象流程图
 
-长任务有两个常见极端。
-
-人如果规划一点、让 AI 做一点、再逐步检查一点，确实比较稳，但最终会变成人工流水线质检员。反过来，如果把整条任务链一次性交给 AI，顺利时很轻松；一旦结果异常，却很难判断问题最早出在思路、执行还是验收。
-
-这个 Skill 想解决的只有一个问题：
-
-> 让人退出逐步监督，同时通过多 Agent 的规划攻防、专注执行和对抗审查，降低长链任务跑偏后无法定位的风险。
-
-它不是严丝合缝的工作流引擎，也不追求固定人数、复杂表单或无限辩论。AI 已经很擅长执行；额外模型最有价值的位置，是执行前把 Plan 想透，以及执行后把结果攻破。
-
-## 2. 总体结构
-
-固定的是 `Plan -> Execute -> Check` 三类责任，不是固定三个 Agent。
+这套设计来自作者原本反复使用的一条工作流：
 
 ```text
-用户
-`-- GPT Chair：理解目标、组织攻防、依据证据裁决
-    |-- 1. Plan
-    |   `-- Chair 提出草稿 -> DeepSeek 攻击 -> Chair 防守或修订
-    |-- 2. Execute
-    |   |-- DeepSeek Worker：默认唯一实现者
-    |   `-- 更多 DeepSeek Workers：仅用于独立 worktree
-    `-- 3. Check
-        |-- 可复现检查
-        `-- GPT Chair 攻击 -> DeepSeek Executor 防守或修复
+用户与单个模型多轮讨论
+-> 形成实验 Plan
+-> 模型集中执行，并自动解决小 bug
+-> 结果 promising：move on
+-> 结果不 promising 或明显反直觉：人工核验数据流和实现
+-> 修实现或换方案
+-> 进入下一轮 Plan、执行和观察
+-> 直到 idea 足以形成论文或达到 SOTA
 ```
 
-GPT Chair 保留用户目标和全局上下文。它可以调查项目、准备 worktree、运行测试和整合结果，但不应悄悄接管代码实现；需要写代码时，继续派给 DeepSeek Worker。
+它的优势是灵活、快速，而且允许研究思路逐轮加深。问题也恰恰来自模型越来越强：只要结果没有明显反直觉，人就很容易跳过“实现是否真的符合 Plan”这一步。一个看起来合理甚至很好的结果，可能悄悄掩盖数据流偏差、错误配置、评价泄漏或未声明的 baseline 改动，并把错误带进后续迭代。
 
-## 3. Plan：有限轮次的对抗规划
+另一种极端是人规划一点、让 AI 做一点、再检查一点。它比较稳，却让研究者变成人工流水线质检员。
 
-简单、明确、可机械验证的任务由 Chair 直接规划，不为了形式强行开会。
+Solid Vibe Coding 想解决的不是“每个小动作都绝不出错”，而是：
 
-当存在多条合理路线、错误返工昂贵、关键假设不稳定或任务难以验证时，启动对抗规划：
+> 让人退出逐步监督，同时保留对整轮探索是否 solid 的判断力；VibeCoding 可以自动推进，但不能退化成只凭最终分数决定成败的 RandomCoding。
+
+## 2. 核心设计：一轮自动化，只保留两个 Human Gate
+
+固定的是两个用户必须判断的边界，而不是模型品牌、Agent 数量或执行拓扑：
 
 ```text
-Chair：基于目标、约束和项目事实提出 Plan 草稿
-   |
-DeepSeek Challenger：定点攻击假设、反例、失败模式和验证缺口
-   |
-Chair：承认有效攻击并修订，或提供新证据防守
-   |
-DeepSeek Challenger：仅在还能提供新证据时继续反驳
+用户提出 idea 或问题
+-> 主对话模型形成正方 Plan
+-> 临时 Plan Challenger 对抗审查
+-> [Plan Gate：用户判断是否合理、是否值得执行]
+-> 主对话模型直接执行或协调执行者
+-> 主对话模型重建 Plan 到实现和证据的映射
+-> 临时 Check Challenger 对抗审查
+-> [Check Gate：用户判断实现是否忠实、未规定的选择是否可接受]
+-> move on / 修实现 / 重新规划 / 补充实验 / 停止
 ```
 
-攻防不要求双方先独立写一份完整方案。Chair 负责提出和收敛方案，DeepSeek 负责施加对抗压力。默认两轮、最多三轮；目标是暴露盲区，不是强迫达成共识，也不是按票数决定路线。
+只有默认提问启动的主对话模型贯穿整个迭代。它持续持有用户目标、项目上下文、采用的 Plan、执行状态和最终证据。Plan Challenger 与 Check Challenger 都是临时新开的 subagent：它们读取主模型的完整主张和证据进行定点攻击，在对应 Gate 的攻防结束后关闭。
 
-当继续辩论已经不能产生新证据时，Chair 停止讨论：
+“独立 Challenger”指独立的 subagent 上下文，不是脱离正方辩词做盲审，也不是让主模型自己模拟左右脑互搏。
 
-- 一方方案证据更充分：Chair 采用该方案；
-- 分歧来自缺少可验证事实：先做最小调查或实验；
-- 分歧涉及用户偏好、风险取舍或仍无法判断：交给用户。
+## 3. `solid-vibe-coding`：工作流控制层
 
-提交给用户的不是整段聊天，而是一份简短证据包：
+### Plan Gate
+
+主模型先把 idea 展开成完整的低层设计：动机、科学主张、适用的 baseline、reference implementation 或 backbone 及预期改动、分析对象、开放选择、评价合同，以及成功与失败如何改变决策。Challenger 再攻击其中的薄弱 claim。
+
+一个 blocking objection 必须同时说明：
+
+- 它影响哪项 claim；
+- 具体 failure mode 或反例是什么；
+- 最小判别证据是什么；
+- 它会改变用户的哪项决定。
+
+Plan Challenger 不是泛泛寻找“可能有风险”，而是集中攻击五类会让实验失去解释力的问题：
+
+1. 动机、问题定义和主张是否抓住了真正要验证的问题；
+2. 设计能否隔离目标变量，排除混杂与竞争解释；
+3. 开放选择和实现边界是否足以在事后核验 Plan-to-code 一致性；
+4. evaluator 与验收逻辑能否区分关键结果；
+5. 可能结果是否真的会改变下一项决策，成本与风险是否值得。
+
+主模型用证据防守或修订，Challenger继续攻击修订后的主张。至少一轮、最多三轮；中间轮次无需用户监督。只有同时存在 blocking objection，并且下一轮能加入新的判别证据、检查结果或实质修订时，才自动继续；如果反方已经没有具体异议，则提前结束。最终由主模型按证据裁决，不按模型投票，也不伪造共识。
+
+交给用户的不是动作清单，而是一段可以直接判断的故事：问题为什么出现，正方为什么提出这套方案，反方抓住了什么漏洞，双方用什么证据解决了哪些争议，还剩什么不确定性，以及批准后会验证什么。
+
+### 自适应执行
+
+执行不绑定某个 provider，也不强制另开 executor。主模型可以直接执行，也可以把一个任务交给 subagent，或把真正独立的子任务并行委派；用户指定外部模型时则遵循该选择。
+
+Plan Gate 冻结的不只是科学语义，也包括资源与费用、权限、外部副作用，以及允许的恢复和诊断范围。执行者可以在这个包络内自主处理实现细节、安全重试和小 bug；任何一条边界发生实质扩张，都必须返回 Plan Gate。弱结果、意外结果或不确定结果本身不构成自动追加实验的授权。
+
+### Check Gate
+
+Check Gate 首先不问实验结果好不好，而是确认“我们实际实现的是不是用户批准的 Plan”。主模型先重建：
 
 ```text
-争议决策
-|-- 方案 A：证据与后果
-|-- 方案 B：证据与后果
-`-- Chair 的推荐及理由
+冻结 Plan
+-> 实际代码、配置和数据流
+-> Plan 中开放选择的具体落地
+-> 相对 baseline、reference implementation 或 backbone 的重要改动
+-> 用于证明上述映射的 diff、配置、数据流和运行证据
+-> 在实现一致性成立后，实验输出可支持的结论、限制与不确定性
 ```
 
-## 4. Execute：只让 DeepSeek 实现
+主模型先运行适用的可复现检查，再把冻结 Plan、实际 diff/实现、产物、检查证据和失败项一起交给 Check Challenger，而不是只给一份精选摘要。反方集中攻击四类问题：
 
-计划确定后，DeepSeek V4 Pro 是唯一代码 Writer。
+1. 实现、数据流、开放选择的落地和 baseline delta 是否忠实于 Plan；
+2. Plan 没有规定死的选择实际上如何落地，是否有遗漏或未经声明的偏离；
+3. 实际 diff、输入、检查和运行证据是否足以证明这份一致性账目；
+4. 后续结果解释是否把实现缺陷或其他解释误当成 idea 的证据。
 
-### 一个实现任务
+这样，即使结果 promising，也不能跳过实现一致性审计；如果实现与 Plan 一致但结果不理想，证据才应归因到 idea，而不是先假设代码有 bug。
 
-Chair 调用 `run_deepseek_worker`，提供：
+报告分两次组织：先建立完整的 claim/evidence/uncertainty/consequence map，再按用户必须判断的少数问题重新叙述。聊天本身必须自洽，文档只在解释之后提供精确证据指针。汇报完成后流程停在 Check Gate，由用户判断实现是否可信、哪些开放选择需要接受或修正，再决定 move on、修实现、重新规划、补充实验或停止。
 
-- 已采用的 Plan；
-- 实现范围和非目标；
-- 项目约束；
-- 完成标准和后续检查。
+## 4. `experiment-management`：实验信息架构层
 
-Worker 可以自主读取和编辑指定工作区，但首版不允许使用终端、网络、外部目录或递归 subagent。完成后，由 Chair 运行测试；若失败，把具体错误证据重新交给 DeepSeek 修复。
+对抗讨论解决“判断是否 solid”，但不能单独解决脚本与输出随迭代失控的问题。第二套 skill 负责让用户一眼看懂：
 
-### 多个实现任务
+- 当前 Plan 包含哪些可独立判断的分析对象；
+- Plan 和各对象有哪些受支持的执行入口；
+- 哪些输出是主要证据；
+- 当前结论与下一道 Gate 是什么。
 
-只有子任务可以独立实现、独立验收时，才调用 `run_deepseek_workers`：
+它不强制 `current/`、`outputs/`、`src/` 等固定名字，而是约束语义关系：
+
+- 按分析对象组织，不按命令、Agent、seed、retry 或时间线组织；
+- 明确区分公开入口与内部实现；
+- 明确区分主要结果、支持证据和可再生成中间产物；
+- 一个 Plan 或对象允许有多个真正不同的执行入口，但必须在公开表面说明每个入口回答什么；
+- 参数化系统性 variants，避免复制脚本与输出树；
+- 下游对象通过上游 Gate 后再懒创建。
+
+这样文件系统承担的是“帮助用户快速判断”，而不是忠实展示 AI 做过的每一个动作。
+
+## 5. 两套 Skill 如何配合
 
 ```text
-独立任务 A -> DeepSeek Worker A -> worktree A
-独立任务 B -> DeepSeek Worker B -> worktree B
-独立任务 C -> DeepSeek Worker C -> worktree C
+solid-vibe-coding
+├── Plan Gate：对抗规划并交给用户判断
+├── Adaptive Execution：选择合适执行拓扑
+└── Check Gate：核对 Plan 与实现并交给用户判断
+
+experiment-management
+├── 把 Plan 映射为分析对象与公开入口
+├── 把运行产物分成主要证据与支持材料
+└── 保持跨迭代的计划、报告、日志与清理可追溯
 ```
 
-同一或相互嵌套的工作区不允许同时存在多个 Writer。并行省的是高价模型成本和墙上时间，并不天然节省总 token；耦合任务应交给一个 Worker。
+通常由 `solid-vibe-coding` 驱动完整研究迭代；当任务会产生持久实验脚本、输出和报告时，再组合使用 `experiment-management`。后者不判断科学方案是否正确，前者也不规定具体目录布局。
 
-DeepSeek 不可用时只重试一次，不应静默切换为 GPT 实现。
+## 6. 可选 Provider Adapter：DeepSeek
 
-## 5. Check：让结果经受攻击
+仓库中现有的 DeepSeek bridge 已经验证了三类可选能力：
 
-Check 先做可复现检查，再进行模型攻防。所谓可复现检查，是同样的输入和环境能够重复得到明确结果、不依赖某个模型主观看法的检查。例如测试是否通过、构建是否成功、CLI 输出是否符合预期、实验指标是否可重跑，以及链接、渲染或交互是否正常。
+- 用 `ask_deepseek` 提供文本 Challenger；
+- 用 `run_deepseek_worker` 让外部模型在受限工作区执行；
+- 用 `run_deepseek_workers` 并行处理互不重叠的执行任务。
 
-```text
-可复现检查
--> GPT Chair 攻击 Plan 与实现
--> DeepSeek Executor 用代码、diff 和测试证据防守或修复
--> GPT Chair 根据新证据重新攻击或通过
--> Chair 裁决
-```
+它通过 OpenCode 为 DeepSeek 提供受限文件工具，并实现可信根、敏感文件拒绝、工作区写锁、超时和并行失败清理。它证明了外部 provider 可以接入这套角色契约，但不是 Solid Vibe Coding 的默认模型、唯一执行者或必要依赖。
 
-GPT Chair 直接切换到攻击者立场，对照原始目标、采用的 Plan、实际产物和检查结果寻找偏差；DeepSeek Executor 负责举证防守或修复。高风险任务可以额外启动 Fresh GPT Reviewer，但它不是默认流程。
+安装、配置、安全边界和验证方式见 [DeepSeek 执行桥接](integrations/deepseek-mcp/README.md)。现有安装脚本会同时链接两套新 skill；它们仍可脱离 DeepSeek adapter 独立使用。
 
-默认两轮、最多三轮。Review 分别判断：
+## 7. 当前草案状态
 
-1. Plan 是否真正满足原始目标；
-2. 实现是否忠实满足 Plan；
-3. 是否遗漏要求；
-4. 是否未经允许增加、删除或改变内容。
+当前仓库由两套 provider-neutral skill 构成：
 
-计划正确但实现偏离，返回 Execute；实现忠实但 Plan 错误，返回 Plan；高影响争议仍无法解决，则把证据包交给用户。
+- `skill/solid-vibe-coding/`
+- `skill/experiment-management/`
 
-## 6. 为什么 DeepSeek 原来不能编辑文件
-
-DeepSeek API 本身只是一个推理接口：
-
-```text
-输入：messages
-输出：文本或 tool-call 意图
-```
-
-它不会自动获得本机文件系统、终端或 Codex 的沙箱。最初的 `ask_deepseek` 只是：
-
-```text
-Codex -> 发送 prompt/context -> DeepSeek API -> 返回文本
-```
-
-所以 DeepSeek 可以建议怎么改，却不能真正读取仓库、修改文件或反复执行工具。
-
-现在增加了两层能力：
-
-```text
-multi-subagents/SKILL.md
-`-- 决定什么时候规划、执行、审查
-
-DeepSeek MCP Bridge
-`-- 把 Codex 的执行任务交给外部 Worker
-
-OpenCode Agent Runtime
-`-- 将 DeepSeek 的 tool calls 变成受限的 read/edit 操作
-
-DeepSeek V4 Pro API
-`-- 负责理解代码和决定具体修改
-```
-
-因此，Skill 负责“什么时候调用谁”，MCP 负责“连接 Codex 与外部 Worker”，OpenCode 提供“手”，DeepSeek 提供“脑”。只写一个 Skill 无法凭空给外部模型增加文件工具。
-
-DeepSeek 官方支持以 V4 Pro 作为 OpenCode 等 coding agent 的后端；当前实现固定使用 OpenCode `1.18.4` 和 `deepseek-v4-pro`，默认推理强度为 `high`，困难任务可升为 `max`。
-
-### 输出预算
-
-这里有三个不同概念：
-
-```text
-上下文窗口：1M
-|-- 输入：Prompt、代码与历史上下文
-`-- 输出：推理 token 与最终回答
-    `-- 单次最大输出：384K
-```
-
-`reasoning_effort` 控制思考深度。`ask_deepseek` 固定使用供应商允许的 384K 最大输出上限，不对外暴露 `max_tokens` 参数；调用方不能人为调低，避免因预算不足导致截断、丢弃并重试。桥接通过 SSE 流式增量读取响应，无需等待完整响应后一次性解析。
-
-桥接仍会检查 `finish_reason: length` 和 `truncated: true`。若模型在供应商最大输出下仍被截断，这说明单个问题过大；该响应不能用于裁决，应拆分任务，而不是继续提高不存在的输出额度。
-
-这一设置只作用于纯文本 `ask_deepseek`。执行代码的 `run_deepseek_worker` 由 OpenCode 管理工具循环，直接编辑工作区文件，不需要在一条消息中返回整个代码项目。
-
-## 7. 全局安装
-
-DeepSeek 的开发源码和 Skill 只保存在本项目。Codex 全局目录通过 Windows 目录联接或 Linux 软链接指向这些源码，因此这里只维护一份，修改后无需再次复制同步：
-
-```text
-本项目
-|-- skill/multi-subagents/SKILL.md
-|-- integrations/deepseek-mcp/
-|-- integrations/deepseek-worker/
-|-- integrations/install-global.ps1
-`-- integrations/install-global.sh
-```
-
-```text
-~/.codex/skills/multi-subagents
-`-- junction/symlink -> 本项目/skill/multi-subagents
-
-~/.codex/integrations/deepseek
-`-- junction/symlink -> 本项目/integrations
-```
-
-Windows 全局安装命令：
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass `
-  -File .\integrations\install-global.ps1
-```
-
-### Linux 一键安装
-
-Linux 需要预先安装 Node.js 18+、Python 3 和 OpenCode 1.14.24+。脚本不会下载二进制，也不会调用真实 DeepSeek API；它会检查依赖、建立全局软链接、创建或复用密钥文件、备份并更新 Codex 配置，最后运行使用模拟 Provider 的本地测试。
-
-```bash
-chmod +x integrations/install-global.sh
-
-./integrations/install-global.sh \
-  --allowed-root /user/work/yanjie
-```
-
-`--allowed-root` 必须显式提供，可以重复传入多个可信代码根。OpenCode 或 Node 不在 `PATH` 时，可以分别使用 `--opencode-bin` 和 `--node-bin` 指定绝对路径：
-
-```bash
-./integrations/install-global.sh \
-  --allowed-root /srv/code \
-  --allowed-root /data/projects \
-  --node-bin /opt/node/bin/node \
-  --opencode-bin /opt/opencode/bin/opencode
-```
-
-密钥默认保存在 `~/.config/deepseek/env`，权限固定为 `600`。首次安装时，脚本优先使用当前环境里的 `DEEPSEEK_API_KEY`；交互式终端中也可以按静默提示输入。已有密钥文件可通过 `--api-key-file` 复用。脚本只替换 `config.toml` 中 DeepSeek MCP 的两个 section，修改前会创建带时间戳的备份，不会覆盖其他 Codex 配置。
-
-安装完成后必须完全重启 Codex。脚本默认只运行不产生 API 费用的模拟测试；真实 API 测试仍需单独手动执行。
-
-### Windows 手动配置参考
-
-Linux 应优先使用上面的脚本生成配置；下面是 Windows 或已经确保 Codex 主进程继承密钥时的手动配置结构：
-
-```toml
-[mcp_servers.deepseek]
-command = '<ABSOLUTE_NODE_PATH>'
-args = ['<USER_HOME>\.codex\integrations\deepseek\deepseek-mcp\server.mjs']
-env_vars = ["DEEPSEEK_API_KEY"]
-enabled_tools = ["ask_deepseek", "run_deepseek_worker", "run_deepseek_workers"]
-tool_timeout_sec = 14400
-default_tools_approval_mode = "approve"
-
-[mcp_servers.deepseek.env]
-DEEPSEEK_ALLOWED_ROOTS = '<ABSOLUTE_TRUSTED_PROJECT_ROOT>'
-```
-
-将三个占位符替换为本机绝对路径。位于同一可信代码根下的 Git 项目不需要逐个配置；若项目分布在不同顶层目录，再把必要范围加入 `DEEPSEEK_ALLOWED_ROOTS`。
-
-`approve` 会默认放行该 MCP 的普通工具调用，避免每次手动确认；它不会绕过 Codex 对密钥外发、危险写入等行为的安全审查。
-
-`tool_timeout_sec = 14400`（4 小时）与桥接内部硬超时（默认 3h55m）匹配；若当前全局配置仍是旧值 `930`，需同步更新并重启 Codex，否则 Codex 可能过早终止长时间推理任务。
-
-桥接级超时通过环境变量控制：`DEEPSEEK_REQUEST_TIMEOUT_MS`（硬总时限，默认 14,100,000 ms / 3h55m，范围 1,000..14,100,000）和 `DEEPSEEK_IDLE_TIMEOUT_MS`（空闲超时，默认 300,000 ms / 5min，范围 1,000..600,000）。硬时限不重置；每次收到网络 chunk 重置空闲计时。用户取消优先报 `CANCELLED`；空闲超时报 `UPSTREAM_IDLE_TIMEOUT`；硬时限报 `UPSTREAM_TIMEOUT`。
-
-流式响应最多接收 128 MiB 原始 SSE 数据，最终返回正文最多保留 16 MiB；思考流会被消费但不保存。原始流上限高于旧版非流式限制，以容纳长输出中每个 SSE 事件附带的协议与 JSON 开销。
-
-API key 只保存在本机环境变量或权限为 `600` 的本机密钥文件中，不会写入 Skill、仓库或 `config.toml`。目录联接或软链接会让正文修改立即反映到全局路径，但 Codex 通常在新会话或重启后重新读取 Skill 元数据和 MCP 配置。
-
-### Windows 与 Linux
-
-仓库不提交跨平台 OpenCode 二进制。Windows 安装脚本根据锁文件下载当前验证的 Windows 版本并创建目录联接；Linux 脚本复用使用者按 OpenCode 官方方式安装的版本，并创建软链接。两个系统共享同一份 Skill 与桥接源码，操作系统差异只留在运行时安装、路径和全局链接方式。
-
-## 8. 安全边界
-
-允许 DeepSeek 编辑文件意味着相关代码会发送给 DeepSeek。当前桥接采用以下限制：
-
-- 仅接受 `DEEPSEEK_ALLOWED_ROOTS` 下的 Git 仓库或 worktree 根；
-- 拒绝包含 `.env`、私钥、PEM、凭据文件的工作区；
-- 拒绝项目内 `opencode.json`、`opencode.jsonc` 和 `.opencode/`，防止覆盖权限；
-- 仅开放工作区内 `read/edit/glob/grep/list`；
-- 禁止终端、网络、外部目录、插件、MCP 和递归 subagent；
-- 一个工作区只允许一个 Writer；
-- 并行组任一 Worker 失败时，先终止并等待其他 Worker，再释放目录锁；
-- 工具调用默认要求批准。
-
-这些保护降低常见风险，但不能证明任意代码库绝不包含秘密。应优先使用干净 worktree，不要把生产凭据放进交给外部模型的工作区。
-
-## 9. 本次调试过程
-
-### 阶段一：验证普通 API
-
-先用 DeepSeek 官方 `chat/completions` 接口实现 `ask_deepseek`，固定模型为 V4 Pro，启用 thinking，并测试鉴权、超时、取消、响应大小、重定向和密钥脱敏。
-
-结果：DeepSeek 能参与 Plan 和 Review，但只能返回文本。
-
-### 阶段二：增加 Agent 工具循环
-
-为了让 DeepSeek 真正操作代码，引入 DeepSeek 官方支持的 OpenCode。第一次通过通用 npm 包安装失败，因为 Windows 平台包没有正确落地；随后固定安装 `opencode-windows-x64@1.18.4`。
-
-结果：DeepSeek 成功读取隔离目录的 README，并按要求只修改一行。
-
-### 阶段三：解决真实运行卡住
-
-封装成 Worker 后，第一次真实测试一直等待到超时。原因不是模型能力，而是启动 Worker 时清理环境变量过度，把本机代理变量一并删除，导致 OpenCode 无法访问 DeepSeek API。
-
-修正后只转发必要的系统变量、API key 和代理变量。单 Worker 恢复为十几秒内完成。
-
-### 阶段四：安全复核
-
-第一轮实现虽然能工作，但复核发现四个关键问题：
-
-1. 调用者可以把任意目录声明为 workspace；
-2. 项目 OpenCode 配置可能覆盖权限；
-3. Worker 可能读到 `.env` 或私钥；
-4. 并行组中一个 Worker 失败后，其他 Worker 可能继续写文件。
-
-对应修复为：可信根 allowlist、Git 根校验、拒绝项目 OpenCode 配置、敏感文件扫描和读取 deny、唯一受限 Agent、跨调用目录锁，以及并行 fail-fast 后等待清理。
-
-### 阶段五：验证结果
-
-当前已经通过：
-
-- MCP 桥接单元测试；
-- Skill 格式校验；
-- 单个 DeepSeek Worker 的真实文件编辑；
-- 两个 DeepSeek Workers 在不同 Git 工作区中的真实并行编辑；
-- 密钥未进入仓库扫描。
-
-真实并行测试中，两个 Worker 分别只修改自己的 README，证明“一个 Writer 一个 worktree”的主路径已经跑通。
-
-## 10. 当前状态
-
-当前版本已经具备：
-
-```text
-Plan：GPT + DeepSeek 有限轮次攻防
-Execute：一个或多个隔离的 DeepSeek V4 Pro Workers
-Check：可复现检查 + GPT Chair 与 DeepSeek 有限轮次攻防
-```
-
-它仍是一个轻量实验版本。首版有意不加入固定角色编制、复杂任务 schema、动态模型权重或自动淘汰；只有真实使用暴露出明确问题时，再增加对应约束。
+原 `multi-subagents` 原型已经由这两套职责更单一的 skill 取代。首版刻意不加入固定模型编制、任务难度路由、执行者限制、Git/worktree 流程或强制目录名。只有跨任务重复出现且无法由现有 meta 约束覆盖的问题，才值得进入通用 skill。
 
 ## 参考
 
+核心编排：
+
 - [Codex 配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)
 - [Codex Subagents](https://learn.chatgpt.com/docs/agent-configuration/subagents)
+
+DeepSeek 可选适配器：
+
 - [DeepSeek coding-agent 集成指南](https://api-docs.deepseek.com/guides/coding_agents/)
 - [DeepSeek API](https://api-docs.deepseek.com/)
 - [OpenCode Agent 配置](https://opencode.ai/docs/agents/)

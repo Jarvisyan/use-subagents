@@ -43,7 +43,9 @@ require_value() {
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 source_root="$(cd -- "$script_dir/.." && pwd -P)"
-skill_source="$source_root/skill/multi-subagents"
+solid_vibe_skill_source="$source_root/skill/solid-vibe-coding"
+experiment_skill_source="$source_root/skill/experiment-management"
+legacy_skill_source="$source_root/skill/multi-subagents"
 
 codex_home="${CODEX_HOME:-${HOME:?HOME 未设置}/.codex}"
 api_key_file="${XDG_CONFIG_HOME:-${HOME:?HOME 未设置}/.config}/deepseek/env"
@@ -177,38 +179,96 @@ grep -Eq '^[[:space:]]*(export[[:space:]]+)?DEEPSEEK_API_KEY=' "$api_key_file" |
   fail "密钥环境文件中未找到 DEEPSEEK_API_KEY 赋值。"
 }
 
-install_link() {
+preflight_link() {
   local link_path="$1"
   local target_path="$2"
   local resolved_target
   local existing_target
-  local backup_path
 
   resolved_target="$(readlink -f -- "$target_path")"
-  mkdir -p -- "$(dirname -- "$link_path")"
+  [[ -n "$resolved_target" ]] || fail "链接目标不存在：$target_path"
 
   if [[ -L "$link_path" ]]; then
     existing_target="$(readlink -f -- "$link_path" 2>/dev/null || true)"
     if [[ "$existing_target" == "$resolved_target" ]]; then
-      printf '软链接已正确：%s -> %s\n' "$link_path" "$resolved_target"
       return
     fi
+    fail "拒绝覆盖指向其他位置的软链接：$link_path"
   fi
 
   if [[ -e "$link_path" || -L "$link_path" ]]; then
-    backup_path="${link_path}.bak-$(date +%Y%m%d-%H%M%S-%N)"
-    mv -- "$link_path" "$backup_path"
-    printf '已备份原路径：%s\n' "$backup_path"
+    fail "拒绝覆盖已有路径：$link_path"
+  fi
+}
+
+install_link() {
+  local link_path="$1"
+  local target_path="$2"
+  local resolved_target
+
+  preflight_link "$link_path" "$target_path"
+  resolved_target="$(readlink -f -- "$target_path")"
+  if [[ -L "$link_path" ]]; then
+    printf '软链接已正确：%s -> %s\n' "$link_path" "$resolved_target"
+    return
   fi
 
+  mkdir -p -- "$(dirname -- "$link_path")"
   ln -s -- "$resolved_target" "$link_path"
   printf '已创建软链接：%s -> %s\n' "$link_path" "$resolved_target"
 }
 
+preflight_legacy_skill_link() {
+  local link_path="$1"
+  local expected_target="$2"
+  local raw_target
+  local normalized_target
+
+  if [[ ! -e "$link_path" && ! -L "$link_path" ]]; then
+    return
+  fi
+  [[ -L "$link_path" ]] || fail "旧 Skill 路径不是软链接，拒绝删除：$link_path"
+
+  raw_target="$(readlink -- "$link_path")"
+  if [[ "$raw_target" == /* ]]; then
+    normalized_target="$(readlink -m -- "$raw_target")"
+  else
+    normalized_target="$(readlink -m -- "$(dirname -- "$link_path")/$raw_target")"
+  fi
+
+  [[ "$normalized_target" == "$(readlink -m -- "$expected_target")" ]] || {
+    fail "旧 Skill 软链接指向其他位置，拒绝删除：$link_path"
+  }
+}
+
+remove_legacy_skill_link() {
+  local link_path="$1"
+  local expected_target="$2"
+
+  preflight_legacy_skill_link "$link_path" "$expected_target"
+  if [[ ! -L "$link_path" ]]; then
+    return
+  fi
+  unlink -- "$link_path"
+  printf '已移除旧 Skill 软链接：%s\n' "$link_path"
+}
+
 integration_link="$codex_home/integrations/deepseek"
-skill_link="$codex_home/skills/multi-subagents"
+solid_vibe_skill_link="$codex_home/skills/solid-vibe-coding"
+experiment_skill_link="$codex_home/skills/experiment-management"
+legacy_skill_link="$codex_home/skills/multi-subagents"
+
+preflight_link "$integration_link" "$script_dir"
+preflight_legacy_skill_link "$legacy_skill_link" "$legacy_skill_source"
+preflight_link "$solid_vibe_skill_link" "$solid_vibe_skill_source"
+preflight_link "$experiment_skill_link" "$experiment_skill_source"
+
 install_link "$integration_link" "$script_dir"
-install_link "$skill_link" "$skill_source"
+install_link "$solid_vibe_skill_link" "$solid_vibe_skill_source"
+install_link "$experiment_skill_link" "$experiment_skill_source"
+preflight_link "$solid_vibe_skill_link" "$solid_vibe_skill_source"
+preflight_link "$experiment_skill_link" "$experiment_skill_source"
+remove_legacy_skill_link "$legacy_skill_link" "$legacy_skill_source"
 
 config_path="$codex_home/config.toml"
 server_path="$integration_link/deepseek-mcp/server.mjs"
@@ -325,7 +385,8 @@ cat <<EOF
 Linux 全局安装完成。
 
   DeepSeek MCP：$integration_link
-  Multi-subagents Skill：$skill_link
+  Solid Vibe Coding Skill：$solid_vibe_skill_link
+  Experiment Management Skill：$experiment_skill_link
   Codex 配置：$config_path
   密钥文件：$api_key_file
   OpenCode：$opencode_bin ($opencode_version)
