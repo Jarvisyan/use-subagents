@@ -15,14 +15,33 @@ Automate the research iteration without automating away judgment. Use adversaria
 research problem
   -> adversarially choose and design the most decision-critical experiment
   -> [user decides from the Plan report whether to proceed]
-  -> execution inside the accepted Plan
-  -> adversarial Check against the accepted Plan
-  -> [user decides from the Check report whether to trust, repair, re-plan, or stop]
+  -> implement, then adversarially check fidelity to the accepted Plan
+  -> [user decides from the Check report whether to run, repair, re-plan, or stop]
+  -> run the checked experiment
 ```
 
-The main agent carries the goal and context through the whole iteration. A temporary Plan Challenger participates in planning before execution; a new temporary Check Challenger audits the completed work afterward. Run each discussion for one to three evidence-driven rounds, continuing only while another round could change the Plan or the Check conclusion.
+The main agent carries the goal and context through the whole iteration. Before implementation, a temporary Plan Challenger adversarially tests whether the proposed experiment is truly the most decision-critical—the prerequisite experiment on which downstream work depends—and whether its design can resolve that prerequisite. After implementation, a new temporary Check Challenger adversarially tests whether the implementation faithfully realizes the accepted Plan before it is run. Run each discussion for one to three evidence-driven rounds, continuing only while another round could change the Plan or the Check conclusion.
 
-Before writing either report, build the complete low-level reasoning and evidence. Preserve the supporting detail needed for audit and reproduction in the document, but distill the chat report to the decision-relevant essentials. Organize both as a hierarchy of topics and subtopics rather than a flat list or chronology, connecting each topic's motivation, reasoning or evidence, limitations, and decision consequence. Make the chat self-contained for judgment, then provide exact document or artifact pointers for deeper detail.
+Use the same recursive hierarchy of key points for each chat report and its supporting document:
+
+```text
+report
+  -> overview
+       (overall conclusion, key reasons, and decision or action needed)
+  -> motivation and context
+       (research goal, last accepted state, what has since been done or learned,
+        and why it matters now)
+  -> key point A
+       -> subpoint A1
+            -> lower-level point ...
+       -> subpoint A2
+  -> key point B
+       -> subpoint B1
+       -> subpoint B2
+  -> ...
+```
+
+Before writing a Plan or Check report, build the complete low-level reasoning and evidence. Begin with an overview that states the overall conclusion, its key reasons, and the decision or action needed; do not make the reader synthesize the conclusion from the details. Follow with the motivation and context needed to re-enter the task: the research goal, last accepted state, what has since been done or learned, and why it matters now. Then organize what needs to be reported into distinct decision-relevant key points, decompose each into subpoints, and recurse only as needed. For every point, give a connected account of the proposal or finding, reasoning or evidence, limitations, and decision consequence, adding enough local context to make the point intelligible. These are not headings or checklist fields, but parts of a coherent narrative. Preserve the supporting detail needed for audit and reproduction in the document, but distill the chat report to the decision-relevant essentials. The chat report may compress evidentiary depth, but not the narrative or decision chain: make it self-contained for judgment without requiring the reader to reconstruct context from earlier messages or documents, then provide exact document or artifact pointers for deeper detail.
 
 ## Plan — Choose and Design the Next Experiment
 
