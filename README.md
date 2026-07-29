@@ -1,6 +1,8 @@
-# Solid Vibe Coding
+# Vibe Research Skills
 
-> 一套基于作者自己科研工作流设计的 provider-neutral 方法：人只保留 Plan Gate 和 Check Gate，AI 自动完成中间的对抗规划、自适应执行、实现一致性审计和证据整理。
+> 把真实科研工作流逐模块凝练成 provider-neutral Skills：AI 自动处理可委托的规划、执行、检查和写作，人保留决定研究方向与接受最终产物的关键关口。
+
+当前实现覆盖两类高频工作：`solid-vibe-coding` 与 `experiment-layout` 支持研究实验迭代，`vibe-paper` 支持在方法和核心实验已经固定后规划、撰写和检查论文 Method。各模块先独立做到可靠，再逐步扩展到完整研究流程。
 
 ## 1. 设计来源：真实科研迭代，而不是抽象流程图
 
@@ -86,11 +88,31 @@ experiment-layout
 
 通常由 `solid-vibe-coding` 驱动完整研究迭代；当任务会产生持久实验脚本、输出和报告时，再组合使用 `experiment-layout`。后者不判断科学方案是否正确，前者也不规定具体目录布局。
 
-## 6. 源文件与同步边界
+## 6. `vibe-paper`：本地论文写作层
 
-这个仓库现在是通用 Codex 配置的单一源。`AGENTS.md`、`skill/solid-vibe-coding/` 与 `skill/experiment-layout/` 进入 Git，供不同机器同步；`~/.codex` 中的对应位置通过符号链接引用这里，不再维护第二份副本。
+`vibe-paper` 把论文按章节拆成可独立设计和迭代的工作流；当前只实现 Method，不把尚未验证的通用写作规则提前复制到 Introduction、Related Work 或 Experiments。
 
-`integrations/` 与 `skill/cluster-routing/` 包含服务器专用的工具、路径和资源规则，因此保留在本地仓库目录中，但由 `.gitignore` 排除，不上传云端。外部模型或服务器工具仍可按本机配置显式使用，不成为两套通用 Skill 的依赖。
+Method 工作流接收已经确定的方法、创新定位、实现和论文上下文，不重新决定研究贡献。它通过对抗 Plan 同时回答两个问题：Method 应选择哪些信息、分别解释到什么程度，才能突出创新并完整定义方法；这些内容应如何分解、排序和呈现，才能降低阅读成本并让读者无歧义地重建算法。用户接受 Plan 后，AI 逐块写作并进行最多三轮对抗检查，用户决定接受、重写、重规划或停止；所有块完成后再检查跨块一致性。
+
+```text
+固定方法、创新定位、实现与论文上下文
+-> 对抗式规划 Method 的内容边界与读者路径
+-> [用户决定是否接受 Method Plan]
+-> 细化并撰写当前 block
+-> 对抗式检查来源、Plan 与局部解释链的一致性
+-> [用户决定接受、重写、重规划或停止]
+-> 逐块推进，最后检查完整章节
+```
+
+`skill/vibe-paper/SKILL.md` 只负责自动触发和章节路由；Method 的完整规则保存在 `skill/vibe-paper/references/method.md`，触发后按需读取。后续每完成一个章节工作流，再增加对应 reference 和路由，不让顶层 Skill 膨胀成通用写作规则集合。
+
+这个 Skill 面向本地论文写作环境。本仓库只保存和同步其源文件；云服务器不安装、不注册，也不在服务器的 `~/.codex` 中建立链接。
+
+## 7. 源文件与同步边界
+
+这个仓库现在是通用 Codex 配置的单一源。`AGENTS.md`、`skill/solid-vibe-coding/`、`skill/experiment-layout/` 与 `skill/vibe-paper/` 进入 Git，供不同机器同步；`solid-vibe-coding` 与 `experiment-layout` 可由服务器的 `~/.codex` 通过符号链接引用，`vibe-paper` 只在本地论文写作环境安装。
+
+`integrations/` 与 `skill/cluster-routing/` 包含服务器专用的工具、路径和资源规则，因此保留在本地仓库目录中，但由 `.gitignore` 排除，不上传云端。外部模型或服务器工具仍可按本机配置显式使用，不成为这些通用 Skills 的依赖。
 
 原 `multi-subagents` 原型已经由职责更单一的 `solid-vibe-coding` 与 `experiment-layout` 取代。通用 Skill 只保留跨任务稳定的 meta 约束；服务器环境和 provider 实现留在本地配置层。
 

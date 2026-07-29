@@ -1,0 +1,4 @@
+interface:
+  display_name: "VibePaper"
+  short_description: "Plan and draft evidence-grounded research papers"
+  default_prompt: "Use $vibe-paper to plan and draft an evidence-grounded algorithm paper from trusted research artifacts."
