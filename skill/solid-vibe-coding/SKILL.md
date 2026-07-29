@@ -1,38 +1,44 @@
 ---
 name: solid-vibe-coding
-description: Use for research or exploratory coding iterations where AI should adversarially choose and design the most decision-critical foundational experiment, verify implementation fidelity before running it, and produce self-contained, decision-ready reports.
+description: Use for research or exploratory coding iterations where a rough, non-trivial idea creates a large experimental search space and AI needs to choose, design, and faithfully implement the next controlled experiment before testing.
 ---
 
 # Solid Vibe Coding
 
 ## Objective
 
-Solid Vibe Coding combines two complementary workflows. The Adversarial Workflow uses evidence-constrained debate to choose and design the most decision-critical foundational experiment and verify before it is run that the implementation faithfully realizes the accepted Plan, while preserving the user's final judgment at each gate. The Report Workflow turns the resulting conclusions, context, evidence, limitations, objections, and decisions into self-contained, decision-ready chat reports and auditable supporting documents. The sections below define the details of both workflows.
+Solid Vibe Coding constrains the search space at the three points where AI can drift: choosing what experiment to do next, deciding what to change relative to which backbone, and translating the accepted Plan into code. The Adversarial Workflow uses evidence-constrained debate to prioritize experiments that can eliminate an unpromising path or select a promising one, ground the backbone and isolate one target change, and verify that implementation introduces no new experimental decisions. The user retains final judgment at the Plan and Check gates. The Report Workflow makes each decision self-contained and auditable.
 
 ## Adversarial Workflow
 
 ```text
-research problem
-  -> adversarially choose and design the most decision-critical experiment
+rough research idea + available project evidence
+  -> adversarially choose the next experimental direction
+  -> adversarially ground the backbone and isolate one target change
   -> [user decides from the Plan report whether to proceed]
-  -> implement, then adversarially check fidelity to the accepted Plan
-  -> [user decides from the Check report whether to run, repair, re-plan, or stop]
-  -> run the checked experiment
+  -> implement without reopening experimental choices
+  -> adversarially check implementation against the accepted Plan
+  -> [user decides from the Check report whether to submit, repair, re-plan, or stop]
+  -> submit the checked experiment for testing
 ```
 
 ### Adversarial Plan
 
-Adversarial Plan uses evidence-constrained debate to choose and design the most decision-critical foundational experiment. The main agent proposes, a temporary Plan Challenger raises the strongest material countercase, and the main agent must defend, revise, or concede. Stop when they reach evidence-based consensus or after three rounds; preserve any unresolved objection for the user.
+Use evidence-constrained debate to constrain the large search space of a rough research idea before coding. The main agent proposes both the experimental direction and design, grounded in the research goal, available project evidence, and task constraints. A temporary Plan Challenger raises the strongest material countercase; the main agent must defend, revise, or concede. Stop at evidence-based consensus or after three rounds, and preserve unresolved objections for the user.
 
-First, determine which unresolved upstream premise most directly underpins the validity or interpretation of downstream work, and which experiment should test it now. The Challenger attacks whether the candidate is truly foundational and whether a more decision-critical experiment should come first, rather than objecting for its own sake.
+First, choose the experimental direction by prioritizing a kill-criterion experiment, whose failure would invalidate the Idea or a major downstream path, or a fork-in-the-road experiment, whose outcome would select between materially different paths. The Challenger tests whether the proposal can eliminate an unpromising path or select a promising mainline, rather than merely tune within one path.
 
-Then design the experiment from a fixed backbone and intended delta, distinguishing exact fixed commitments from open design choices whose values are not determined by current evidence and therefore use disclosed defaults. The Challenger tests whether the backbone, changes, and defaults are reasonable, preserve a meaningful comparison, resolve the upstream premise, and make the consequence of each outcome clear. Present the resulting consensus and unresolved objections in the Plan report; implement only if the user decides to proceed.
+Before defining the target change, identify and justify the backbone for this experiment. Reuse an accepted backbone when appropriate; if no candidate is sufficiently grounded, make backbone selection the next decision-critical experiment. Once selected, keep it fixed within this experiment. Define one target design change and freeze unrelated factors, including data preprocessing, losses, training hyperparameters, and evaluation protocol. Fix in the Plan every choice that could alter the intended comparison or attribution; only implementation details that cannot alter either may use disclosed defaults.
+
+Have the Challenger test whether a more decision-critical experiment should come first, whether the backbone is sufficiently justified, whether the design changes more than one factor, and whether any choice that could materially affect comparison or attribution has been left to implementation.
 
 ### Adversarial Coding
 
-Adversarial Coding implements the accepted Plan, then uses evidence-constrained debate to determine whether the implementation faithfully realizes it before the experiment is run. A new temporary Check Challenger audits the completed implementation, while the user retains the final decision on whether to run it.
+Implement the accepted Plan without reopening its experimental choices. The main agent may decide only implementation details that cannot materially alter the intended comparison or attribution, and must disclose them. After implementation, use evidence-constrained debate with a new temporary Check Challenger to audit fidelity before the experiment is submitted for testing; the user retains the final decision on whether to submit it.
 
-The Challenger makes one consolidated attack on material mismatches between the Plan and implementation, including fixed commitments, open design choices, fidelity to the backbone, and undeclared changes; the main agent defends with evidence. If they reach evidence-based consensus that one or more within-Plan bugs exist, the main agent repairs them as one batch, records the repairs, and enters one final adversarial re-check. Allow at most one repair-and-re-check loop; report any remaining issue or any change that would alter the Plan's agreed meaning instead of repairing again. Maintain one Check document per accepted Plan, updating it in place with agreed repairs and the final re-check rather than creating separate check and re-check reports. Present the conclusion and unresolved objections in the Check report, and run only if the user decides to proceed.
+Have the Challenger make one consolidated comparison between the accepted Plan and the implementation. The prescribed-change check verifies that every planned change is complete, semantically correct, and active in the intended execution path. The unauthorized-change check verifies that the chosen backbone and frozen factors remain unchanged, and that coding introduced no undeclared change or conclusion-relevant decision. The main agent must defend the implementation with evidence.
+
+If they agree that within-Plan bugs exist, repair them as one batch and perform one final re-check. Return any fix that requires a new experimental choice or changes a frozen factor to Plan rather than implementing it. Report the final conclusion, repairs, and unresolved mismatches in one Check report; submit only if the user decides to proceed.
 
 ## Report Workflow
 
