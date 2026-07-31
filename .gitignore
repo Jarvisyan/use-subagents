@@ -17,8 +17,7 @@
 # Third-party repositories are local research inputs, not project dependencies.
 /references/local/
 
-# Server-local integrations and cluster configuration are not cloud-synced.
-/integrations/
+# Server-local cluster configuration is not cloud-synced.
 /skill/cluster-routing/
 /docs/
 
