@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -14,13 +15,39 @@ const configurePath = path.join(
   "configure-deepseek-mcp.mjs",
 );
 const serverPath = path.join(directory, "server.mjs");
+const modelsPath = path.join(integrationRoot, "deepseek-codex", "models.json");
+const officialModelsSha256 =
+  "b459a6e438d6a9939d01fd0dbb4693f165ed732bc8e4fd58d7145d9d94bd49a4";
 const temporaryRoot = fs.mkdtempSync(
   path.join(os.tmpdir(), "deepseek-config-test-"),
 );
 
+function configureArguments(configPath, keyPath, sidecarHome) {
+  return [
+    configurePath,
+    "--config",
+    configPath,
+    "--node",
+    process.execPath,
+    "--server",
+    serverPath,
+    "--key-file",
+    keyPath,
+    "--sidecar-home",
+    sidecarHome,
+    "--models",
+    modelsPath,
+    "--codex-bin",
+    process.execPath,
+    "--allowed-root",
+    temporaryRoot,
+  ];
+}
+
 try {
   const configPath = path.join(temporaryRoot, "config.toml");
   const keyPath = path.join(temporaryRoot, "deepseek.env");
+  const sidecarHome = path.join(temporaryRoot, "deepseek-sidecar");
   fs.writeFileSync(
     keyPath,
     "DEEPSEEK_API_KEY=sk-test-config-key\n",
@@ -52,19 +79,31 @@ try {
     ].join("\n"),
   );
 
+  const directConfigPath = path.join(temporaryRoot, "direct-deepseek.toml");
+  fs.writeFileSync(
+    directConfigPath,
+    'model = "deepseek-v4-flash"\nmodel_provider = "deepseek"\n',
+  );
+  assert.throws(
+    () =>
+      execFileSync(
+        process.execPath,
+        configureArguments(
+          directConfigPath,
+          keyPath,
+          path.join(temporaryRoot, "direct-sidecar"),
+        ),
+        { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+      ),
+    (error) =>
+      /主 config\.toml 已包含 DeepSeek 直连字段/.test(
+        String(error?.stderr ?? ""),
+      ),
+  );
+
   const rawResult = execFileSync(
     process.execPath,
-    [
-      configurePath,
-      "--config",
-      configPath,
-      "--node",
-      process.execPath,
-      "--server",
-      serverPath,
-      "--key-file",
-      keyPath,
-    ],
+    configureArguments(configPath, keyPath, sidecarHome),
     { encoding: "utf8" },
   );
   const result = JSON.parse(rawResult);
@@ -82,21 +121,41 @@ try {
   assert.match(updated, /enabled_tools = \["ask_deepseek"\]/);
   assert.equal(updated.includes("run_deepseek_worker"), false);
   assert.match(updated, /DEEPSEEK_API_KEY_FILE = /);
+  assert.match(updated, /DEEPSEEK_CODEX_HOME = /);
+  assert.match(updated, /DEEPSEEK_CODEX_BIN = /);
+  assert.match(updated, /DEEPSEEK_ALLOWED_ROOTS = /);
   assert.equal(updated.includes("sk-test-config-key"), false);
+
+  const sidecarConfig = fs.readFileSync(
+    path.join(sidecarHome, "config.toml"),
+    "utf8",
+  );
+  assert.match(sidecarConfig, /^model = "deepseek-v4-flash"$/m);
+  assert.match(sidecarConfig, /^model_provider = "deepseek"$/m);
+  assert.match(sidecarConfig, /^preferred_auth_method = "apikey"$/m);
+  assert.match(sidecarConfig, /^forced_login_method = "api"$/m);
+  assert.match(sidecarConfig, /^model_reasoning_effort = "max"$/m);
+  assert.match(sidecarConfig, /^wire_api = "responses"$/m);
+  assert.match(sidecarConfig, /^env_key = "DEEPSEEK_API_KEY"$/m);
+  assert.equal(sidecarConfig.includes("experimental_bearer_token"), false);
+  assert.deepEqual(
+    JSON.parse(
+      fs.readFileSync(path.join(sidecarHome, "models.json"), "utf8"),
+    ),
+    JSON.parse(fs.readFileSync(modelsPath, "utf8")),
+  );
+  assert.equal(
+    crypto.createHash("sha256").update(fs.readFileSync(modelsPath)).digest("hex"),
+    officialModelsSha256,
+  );
+  assert.deepEqual(
+    JSON.parse(fs.readFileSync(modelsPath, "utf8")).models.map((model) => model.slug),
+    ["deepseek-v4-flash", "deepseek-v4-pro"],
+  );
 
   execFileSync(
     process.execPath,
-    [
-      configurePath,
-      "--config",
-      configPath,
-      "--node",
-      process.execPath,
-      "--server",
-      serverPath,
-      "--key-file",
-      keyPath,
-    ],
+    configureArguments(configPath, keyPath, sidecarHome),
     { encoding: "utf8" },
   );
   const reinstalled = fs.readFileSync(configPath, "utf8");

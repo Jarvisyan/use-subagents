@@ -3,13 +3,15 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import http from "node:http";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 
 const directory = path.dirname(fileURLToPath(import.meta.url));
 const serverPath = path.join(directory, "server.mjs");
+const modelsPath = path.resolve(directory, "..", "deepseek-codex", "models.json");
 const testKey = "sk-test-secret-never-print";
 
 class McpClient {
@@ -92,96 +94,104 @@ class McpClient {
   }
 }
 
-async function startMockProvider() {
-  const requests = [];
-  const provider = http.createServer((request, response) => {
-    let raw = "";
-    request.setEncoding("utf8");
-    request.on("data", (chunk) => {
-      raw += chunk;
-    });
-    request.on("end", () => {
-      let body;
-      try {
-        body = JSON.parse(raw);
-      } catch {
-        response.statusCode = 400;
-        response.end("bad json");
-        return;
-      }
-      requests.push({
-        path: request.url,
-        authorization: request.headers.authorization,
-        body,
-      });
+const fakeCodexSource = `#!/usr/bin/env node
+import fs from "node:fs";
 
-      if (body.input === "force-auth-error") {
-        response.statusCode = 401;
-        response.end(
-          JSON.stringify({ error: { message: `bad key ${testKey}` } }),
-        );
-        return;
-      }
-      if (body.input === "force-invalid-json") {
-        response.statusCode = 200;
-        response.end("not-json");
-        return;
-      }
-      response.statusCode = 200;
-      response.setHeader("Content-Type", "application/json");
-      response.write("\n");
-      setTimeout(() => {
-        response.end(
-          JSON.stringify({
-            id: "resp_test",
-            object: "response",
-            status: "completed",
-            model: "deepseek-v4-flash",
-            output: [
-              {
-                type: "reasoning",
-                content: [{ type: "reasoning_text", text: "private" }],
-              },
-              {
-                type: "message",
-                role: "assistant",
-                content: [
-                  { type: "output_text", text: "Independent answer" },
-                ],
-              },
-            ],
-            usage: {
-              input_tokens: 11,
-              output_tokens: 7,
-              total_tokens: 18,
-              input_tokens_details: { cached_tokens: 3 },
-              output_tokens_details: { reasoning_tokens: 2 },
-            },
-          }),
-        );
-      }, 10);
-    });
-  });
-  provider.listen(0, "127.0.0.1");
-  await once(provider, "listening");
-  const address = provider.address();
-  return {
-    provider,
-    requests,
-    baseUrl: `http://127.0.0.1:${address.port}`,
-  };
+const args = process.argv.slice(2);
+if (process.env.CODEX_HOME) {
+  fs.writeFileSync(process.env.CODEX_HOME + "/fake-invoked", "yes");
 }
+let input = "";
+process.stdin.setEncoding("utf8");
+for await (const chunk of process.stdin) {
+  input += chunk;
+}
+const outputIndex = args.indexOf("--output-last-message");
+const outputPath = outputIndex >= 0 ? args[outputIndex + 1] : "";
+const checks = {
+  exec: args[0] === "exec",
+  ephemeral: args.includes("--ephemeral"),
+  json: args.includes("--json"),
+  read_only: args.includes("--sandbox") && args.includes("read-only"),
+  no_ignore_rules: !args.includes("--ignore-rules"),
+  isolated_config: !args.includes("mcp_servers.deepseek.enabled=false"),
+  isolated_environment: Boolean(process.env.CODEX_HOME) &&
+    !process.env.DEEPSEEK_CODEX_HOME &&
+    !process.env.DEEPSEEK_CODEX_BIN &&
+    !process.env.DEEPSEEK_ALLOWED_ROOTS &&
+    !process.env.DEEPSEEK_API_KEY_FILE,
+  flash: args.includes("model=\\\"deepseek-v4-flash\\\""),
+  max: args.includes("model_reasoning_effort=\\\"max\\\""),
+  no_output_cap: !args.some((argument) => /max_(?:tokens|output_tokens)/.test(argument)),
+};
+const allChecks = Object.values(checks).every(Boolean);
+const handoffPresent = input.includes("Parent task:\\nChallenge this plan") &&
+  input.includes("Parent-agent handoff context:\\nThe plan has one assumption.") &&
+  !input.includes("read-only sidecar") &&
+  !input.includes("challenger");
+if (!outputPath) {
+  process.stderr.write("missing output path");
+  process.exit(2);
+}
+  fs.writeFileSync(
+    outputPath,
+    JSON.stringify({
+      marker: "FAKE_SIDECAR_OK",
+      echoed_input_secret: "sk-test-secret-never-print",
+      all_checks: allChecks,
+    checks,
+    handoff_present: handoffPresent,
+  }),
+);
+process.stdout.write(JSON.stringify({
+  type: "item.completed",
+  item: { type: "agent_message", text: "event fallback must not win" },
+}) + "\\n");
+process.stdout.write(JSON.stringify({
+  type: "response.completed",
+  usage: { input_tokens: 10, output_tokens: 20, total_tokens: 30 },
+}) + "\\n");
+`;
 
 async function main() {
-  const { provider, requests, baseUrl } = await startMockProvider();
-  const client = new McpClient({
-    ...process.env,
-    NODE_ENV: "test",
-    DEEPSEEK_API_KEY: testKey,
-    DEEPSEEK_BASE_URL: baseUrl,
-    DEEPSEEK_REQUEST_TIMEOUT_MS: "5000",
-    DEEPSEEK_IDLE_TIMEOUT_MS: "1000",
-  });
+  const temporaryRoot = fs.mkdtempSync(
+    path.join(os.tmpdir(), "deepseek-sidecar-test-"),
+  );
+  const sidecarHome = path.join(temporaryRoot, "sidecar");
+  const workspace = path.join(temporaryRoot, "read-only-workspace");
+  fs.mkdirSync(sidecarHome, { recursive: true });
+  fs.mkdirSync(workspace, { recursive: true });
+  fs.writeFileSync(
+    path.join(sidecarHome, "config.toml"),
+    'model = "deepseek-v4-flash"\n',
+  );
+  fs.copyFileSync(modelsPath, path.join(sidecarHome, "models.json"));
+
+  const fakeCodexMjs = path.join(temporaryRoot, "fake-codex.mjs");
+  fs.writeFileSync(fakeCodexMjs, fakeCodexSource, { encoding: "utf8" });
+  let fakeCodex = fakeCodexMjs;
+  if (process.platform === "win32") {
+    const wrapper = path.join(temporaryRoot, "fake-codex.cmd");
+    fs.writeFileSync(
+      wrapper,
+      `@echo off\r\n"${process.execPath}" "%~dp0fake-codex.mjs" %*\r\n`,
+    );
+    fakeCodex = wrapper;
+  } else {
+    fs.chmodSync(fakeCodexMjs, 0o755);
+  }
+
+  const environment = { ...process.env };
+  delete environment.DEEPSEEK_API_KEY_FILE;
+  environment.NODE_ENV = "test";
+  environment.DEEPSEEK_API_KEY = testKey;
+  environment.DEEPSEEK_CODEX_HOME = sidecarHome;
+  environment.DEEPSEEK_CODEX_BIN = fakeCodex;
+  environment.DEEPSEEK_ALLOWED_ROOTS = workspace;
+  environment.DEEPSEEK_SIDECAR_TIMEOUT_MS = "5000";
+  environment.DEEPSEEK_SIDECAR_IDLE_TIMEOUT_MS = "1000";
+
+  const client = new McpClient(environment);
   try {
     const initialized = await client.request("initialize", {
       protocolVersion: "2025-06-18",
@@ -190,13 +200,17 @@ async function main() {
     });
     assert.equal(
       initialized.result.serverInfo.name,
-      "deepseek-responses-bridge",
+      "deepseek-codex-sidecar",
     );
 
     const listed = await client.request("tools/list");
     assert.deepEqual(
       listed.result.tools.map((tool) => tool.name),
       ["ask_deepseek"],
+    );
+    assert.deepEqual(
+      listed.result.tools[0].inputSchema.properties.reasoning_effort.enum,
+      ["low", "high", "max"],
     );
     assert.equal(
       Object.hasOwn(listed.result.tools[0].inputSchema.properties, "max_tokens"),
@@ -208,60 +222,86 @@ async function main() {
       arguments: {
         prompt: "Challenge this plan",
         context: "The plan has one assumption.",
-        role: "challenger",
-        reasoning_effort: "max",
+        workspace_path: workspace,
       },
     });
     assert.equal(called.result.isError, false);
-    assert.match(called.result.content[0].text, /Independent answer/);
+    assert.match(called.result.content[0].text, /FAKE_SIDECAR_OK/);
     assert.equal(called.result.structuredContent.model, "deepseek-v4-flash");
+    assert.equal(called.result.structuredContent.provider, "deepseek");
+    assert.equal(called.result.structuredContent.reasoning_effort, "max");
+    assert.equal(called.result.structuredContent.workspace, workspace);
     assert.deepEqual(called.result.structuredContent.usage, {
-      input_tokens: 11,
-      output_tokens: 7,
-      total_tokens: 18,
-      cached_input_tokens: 3,
-      reasoning_output_tokens: 2,
+      input_tokens: 10,
+      output_tokens: 20,
+      total_tokens: 30,
     });
+    assert.equal(called.result.structuredContent.codex_events, 2);
+    assert.equal(called.result.content[0].text.includes(testKey), false);
+    assert.equal(called.result.structuredContent.answer.includes(testKey), false);
 
-    assert.equal(requests.length, 1);
-    const request = requests[0];
-    assert.equal(request.path, "/responses");
-    assert.equal(request.authorization, `Bearer ${testKey}`);
-    assert.equal(request.body.model, "deepseek-v4-flash");
-    assert.equal(request.body.stream, false);
-    assert.deepEqual(request.body.reasoning, { effort: "max" });
-    assert.match(request.body.input, /Context supplied by the parent agent/);
-    assert.equal(Object.hasOwn(request.body, "max_tokens"), false);
-    assert.equal(Object.hasOwn(request.body, "max_output_tokens"), false);
-    assert.equal(Object.hasOwn(request.body, "store"), false);
+    const invalidSidecarHome = path.join(temporaryRoot, "invalid-sidecar");
+    fs.mkdirSync(invalidSidecarHome, { recursive: true });
+    fs.copyFileSync(path.join(sidecarHome, "config.toml"), path.join(invalidSidecarHome, "config.toml"));
+    fs.copyFileSync(modelsPath, path.join(invalidSidecarHome, "models.json"));
+    const invalidClient = new McpClient({
+      ...environment,
+      DEEPSEEK_CODEX_HOME: invalidSidecarHome,
+      DEEPSEEK_SIDECAR_TIMEOUT_MS: "not-an-integer",
+    });
+    try {
+      await invalidClient.request("initialize", {
+        protocolVersion: "2025-06-18",
+        capabilities: {},
+        clientInfo: { name: "invalid-timeout-test", version: "1.0.0" },
+      });
+      const invalidTimeout = await invalidClient.request("tools/call", {
+        name: "ask_deepseek",
+        arguments: { prompt: "x", workspace_path: workspace },
+      });
+      assert.equal(invalidTimeout.result.isError, true);
+      assert.match(
+        invalidTimeout.result.content[0].text,
+        /DEEPSEEK_SIDECAR_TIMEOUT_MS/,
+      );
+      assert.equal(
+        fs.existsSync(path.join(invalidSidecarHome, "fake-invoked")),
+        false,
+      );
+    } finally {
+      await invalidClient.close();
+    }
 
-    const invalid = await client.request("tools/call", {
+    const invalidField = await client.request("tools/call", {
       name: "ask_deepseek",
       arguments: { prompt: "x", max_tokens: 10 },
     });
-    assert.equal(invalid.result.isError, true);
-    assert.match(invalid.result.content[0].text, /unsupported fields/);
+    assert.equal(invalidField.result.isError, true);
+    assert.match(invalidField.result.content[0].text, /unsupported fields/);
 
-    const authError = await client.request("tools/call", {
+    const removedRole = await client.request("tools/call", {
       name: "ask_deepseek",
-      arguments: { prompt: "force-auth-error" },
+      arguments: { prompt: "x", role: "challenger" },
     });
-    assert.equal(authError.result.isError, true);
-    assert.equal(authError.result.content[0].text.includes(testKey), false);
-    assert.match(authError.result.content[0].text, /^AUTH_FAILED:/);
+    assert.equal(removedRole.result.isError, true);
+    assert.match(removedRole.result.content[0].text, /unsupported fields/);
 
-    const badJson = await client.request("tools/call", {
+    const outsideWorkspace = await client.request("tools/call", {
       name: "ask_deepseek",
-      arguments: { prompt: "force-invalid-json" },
+      arguments: { prompt: "x", workspace_path: temporaryRoot },
     });
-    assert.equal(badJson.result.isError, true);
-    assert.match(badJson.result.content[0].text, /^BAD_RESPONSE:/);
+    assert.equal(outsideWorkspace.result.isError, true);
+    assert.match(outsideWorkspace.result.content[0].text, /outside DEEPSEEK_ALLOWED_ROOTS/);
   } finally {
     await client.close();
-    provider.close();
-    await once(provider, "close");
+    fs.rmSync(temporaryRoot, {
+      recursive: true,
+      force: true,
+      maxRetries: 3,
+      retryDelay: 50,
+    });
   }
-  process.stdout.write("DeepSeek Responses MCP offline tests passed.\n");
+  process.stdout.write("DeepSeek Codex sidecar MCP offline tests passed.\n");
 }
 
 await main();
