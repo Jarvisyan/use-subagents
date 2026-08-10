@@ -296,7 +296,7 @@ function sidecarConfig(options) {
     'model_reasoning_effort = "max"',
     `model_catalog_json = ${tomlString(path.join(options.sidecarHome, "models.json"))}`,
     'approval_policy = "never"',
-    'sandbox_mode = "read-only"',
+    'sandbox_mode = "danger-full-access"',
     "",
     "[model_providers.deepseek]",
     'name = "deepseek"',

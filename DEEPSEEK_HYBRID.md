@@ -2,7 +2,7 @@
 
 本文记录如何让 Codex 保留 GPT 主模型，同时调用 DeepSeek V4 Flash 进行规划质询、方案对抗和独立审查。当前唯一实现是“GPT → MCP → 官方配置的 DeepSeek Codex sidecar”：MCP 仍是父 GPT 调用 DeepSeek 的入口，sidecar 内部再由官方 Codex 运行时处理 Responses API、工具循环和模型元数据。
 
-文档与实现基线日期：2026-08-02。DeepSeek 的模型支持、价格和 Codex 兼容性仍可能更新，部署前应复核文末官方来源。
+文档与实现基线日期：2026-08-03。DeepSeek 的模型支持、价格和 Codex 兼容性仍可能更新，部署前应复核文末官方来源。
 
 本文面向任意 Linux 或 Windows 用户设备，不要求复用维护者服务器的用户名、目录布局、Node/Codex 安装位置或历史测试版本。安装器会根据目标设备生成绝对路径；文中的 `<repo-root>`、`<codex-config-root>`、`<workspace-root>` 等名称都是需要由本机环境解析的逻辑位置，不是应原样复制的字符串。
 
@@ -61,7 +61,7 @@ GPT 主模型（Codex 当前会话）
 DeepSeek 最终审查报告返回 GPT
 ```
 
-方案 4 仍然需要 MCP，因为官方直连本身不负责“GPT 调 DS”。MCP 后端只负责启动一个按官方方式配置的独立 Codex 进程，不再自己模拟模型代理。当前实现用独立 `DEEPSEEK_CODEX_HOME` 保存 sidecar 配置，用 `--ephemeral`、`--sandbox read-only` 和明确的工作目录运行；sidecar 配置不含任何 MCP 表，因此不会递归启动父 MCP。DeepSeek 收到的 handoff 只包含 GPT 为本次场景生成的任务和上下文，不再由 MCP 额外注入固定的 challenger、reviewer 或只读人格指令。
+方案 4 仍然需要 MCP，因为官方直连本身不负责“GPT 调 DS”。MCP 后端只负责启动一个按官方方式配置的独立 Codex 进程，不再自己模拟模型代理。当前实现用独立 `DEEPSEEK_CODEX_HOME` 保存 sidecar 配置，用 `--ephemeral`、`--sandbox danger-full-access` 和明确的工作目录运行；sidecar 配置不含任何 MCP 表，因此不会递归启动父 MCP。DeepSeek 收到的 handoff 只包含 GPT 为本次场景生成的任务和上下文，不再由 MCP 额外注入固定的 challenger、reviewer 或权限人格指令。
 
 ### 1.4 官方 backbone 与允许偏离
 
@@ -74,8 +74,8 @@ DeepSeek 最终审查报告返回 GPT
 | 运行时推理 | 模型目录的官方默认值仍是 `high`；sidecar 配置和每次 `codex exec` 覆盖为 `max` | 满足本项目对高质量对抗审查的明确选择，不改写官方目录 |
 | 密钥方式 | 用 `env_key` 从 MCP 子进程环境注入，而不是把 Key 写进配置 | 保持 provider 语义不变，同时避免明文落盘 |
 | 无交互认证 | `preferred_auth_method = "apikey"`、`forced_login_method = "api"` | sidecar 没有登录终端，明确选择 API Key 认证；不改变模型、提示词或工具能力 |
-| 混合编排 | 独立 `CODEX_HOME`、MCP `ask_deepseek`、`--ephemeral`、只读沙箱 | 这是“GPT 调用 DS 子代理”所必需的适配层，不属于模型能力定制 |
-| 工作区兼容 | `--skip-git-repo-check` | 允许授权根目录不是 Git 仓库；仍由 `--sandbox read-only` 和 realpath 根边界限制读写范围，不绕过项目规则 |
+| 混合编排 | 独立 `CODEX_HOME`、MCP `ask_deepseek`、`--ephemeral`、`--sandbox danger-full-access` | 这是“GPT 调用 DS 子代理”所必需的适配层；完整读写能力是本次明确授权的运行策略 |
+| 工作区兼容 | `--skip-git-repo-check` | 允许授权根目录不是 Git 仓库；MCP 仍用 realpath 校验 `workspace_path`，但 `danger-full-access` 本身不是文件系统边界，使用时应选择明确授权的工作目录 |
 | 任务角色 | 不在 MCP 或 `models.json` 中预设角色；由 GPT 每次生成完整任务指令 | 避免第二套角色提示与官方 Codex 指令发生错配 |
 
 官方 `models.json` 中虽然同时列出 Flash 和 Pro，官网当前仍注明 Codex 以 Flash 为当前支持模型；目录完整保存，sidecar 运行时不自动切换 Pro。
@@ -86,7 +86,7 @@ DeepSeek 最终审查报告返回 GPT
 
 方案 2 调用的是一个模型端点。桥接器拼好 `instructions` 和 `input`，发起一次 `/responses` 请求，然后抽取最终文本。DeepSeek 无法自行读取仓库；如果它认为还需要查看另一个文件，也没有下一步工具循环可走。
 
-方案 4 调用的是一个代理运行时。DeepSeek 先判断需要查看哪些文件，Codex sidecar 在沙箱内执行只读工具，把结果交还 DeepSeek；模型可以继续推理、再次取证，直到生成最终报告。Responses API 仍在底层使用，但它被完整的 Codex 工具循环包围。
+方案 4 调用的是一个代理运行时。DeepSeek 先判断需要查看或修改哪些文件，Codex sidecar 在 full-access 沙箱内执行读写工具，把结果交还 DeepSeek；模型可以继续推理、再次取证，直到生成最终报告。Responses API 仍在底层使用，但它被完整的 Codex 工具循环包围。
 
 ```text
 GPT 父会话（自动拥有当前聊天上下文）
@@ -111,7 +111,7 @@ GPT 父会话（自动拥有当前聊天上下文）
               DS 最终报告 → 返回 GPT
 ```
 
-这就像“给专家寄一页材料，请他回一封邮件”和“让专家进入只读资料室自行查档”。两者都在咨询同一个专家，工作边界却完全不同。
+这就像“给专家寄一页材料，请他回一封邮件”和“让专家进入授权工作区自行查档并落笔修改”。两者都在咨询同一个专家，工作边界却完全不同。
 
 ### 2.2 两种方案都不自动共享完整父会话
 
@@ -128,7 +128,7 @@ GPT 父会话（自动拥有当前聊天上下文）
 
 所以所谓“一锤子买卖”适用于方案 2 的执行边界，但不代表 DeepSeek 在一次响应内部完全不思考。`reasoning_effort = "max"` 仍可让它进行大量内部推理；限制在于它无法暂停下来索取缺失文件、执行工具，再基于新证据继续推理。
 
-方案 4 同样从 GPT 喂给它的任务交接信息起步，但能够主动扩展自己的工作上下文。它可以发现还需要读取配置文件和测试代码，调用只读工具取得内容，然后继续判断；它看不到的仍是那些只存在于父聊天、既没有写进交接信息也没有落在项目文件里的背景。
+方案 4 同样从 GPT 喂给它的任务交接信息起步，但能够主动扩展自己的工作上下文。它可以发现还需要读取配置文件和测试代码，调用读写工具取得证据或落地修改，然后继续判断；它看不到的仍是那些只存在于父聊天、既没有写进交接信息也没有落在项目文件里的背景。
 
 这也是方案 4 仍需要良好 handoff 的原因。GPT 至少应传递任务目标、争议点、不可违反的约束、验收标准和相关工作目录，而不是只说“请审查一下”；同时也不应为了图省事把完整聊天记录和所有私有数据无差别外发。
 
@@ -182,7 +182,7 @@ Codex 公开文档允许自定义 agent 覆盖 `model` 和 `model_reasoning_effo
 
 ### 3.7 完整代理能力会扩大安全边界
 
-方案 2 只能看到显式传入的文本，容易审计；方案 4 能读取工作区，能力更强，也更容易把不该外发的内容送给上游。挑战者 PoC 应从只读沙箱、最小工作目录和敏感文件排除开始，不能为了恢复模型能力而取消数据边界。
+方案 2 只能看到显式传入的文本，容易审计；方案 4 能读取并修改本机文件，能力更强，也更容易把不该外发的内容送给上游或误改本地内容。当前 full-access 策略应只用于明确授权的机器和项目目录；如果数据敏感，应改用 `workspace-write`、隔离 worktree 或重新收紧沙箱，而不是把 full-access 当成默认安全边界。
 
 ### 3.8 保留测试证据，不把推测写成结论
 
@@ -201,21 +201,21 @@ Codex 公开文档允许自定义 agent 覆盖 `model` 和 `model_reasoning_effo
 
 ### 4.1 适合的任务
 
-一次典型调用像一次独立专家进入只读资料室：GPT 把待审计划、必要上下文和工作目录交给 DeepSeek，DeepSeek 在 sidecar 中按需查阅文件、反复取证并返回反例、遗漏与修正建议，最后仍由 GPT 结合用户目标作出裁决。
+一次典型调用像一次独立专家进入授权工作区：GPT 把待审计划、必要上下文和工作目录交给 DeepSeek，DeepSeek 在 sidecar 中按需查阅文件、必要时直接修改文件、反复取证并返回反例、遗漏与修正建议，最后仍由 GPT 结合用户目标作出裁决。
 
 `ask_deepseek` 不再提供固定的 `role` 参数。GPT 根据当前场景把“寻找反例”“制定计划”“检查实现”或其他任务直接写入 `prompt`，把必要背景放入 `context`；MCP 只负责把这段任务交给官方 Codex sidecar，不再次解释任务角色。
 
 官方模型支持 `low`、`high` 和 `max`；当前 MCP 工具默认值是 `max`。sidecar 配置和每次 `codex exec` 都固定传递 `model_reasoning_effort = "max"`（调用方可以显式改为 `low` 或 `high`）。实现不发送 `max_tokens` 或 `max_output_tokens`，由 Codex/DeepSeek 使用供应商默认输出预算。
 
-### 4.2 不等同于 DeepSeek 文件 Worker
+### 4.2 是具备文件读写能力的 DeepSeek sidecar
 
-Responses API 是模型协议；当前实现把它放在官方 Codex sidecar 内，因此 `ask_deepseek` 是“只读代理意见工具”：
+Responses API 是模型协议；当前实现把它放在官方 Codex sidecar 内，因此 `ask_deepseek` 是一个具备本地文件读写能力的代理工具：
 
-- DeepSeek 只看到 GPT 明确传入的 `prompt`/`context`，并可在 `DEEPSEEK_ALLOWED_ROOTS` 内读取工作区；
-- sidecar 使用 `--sandbox read-only`，可以执行只读检查工具，但不会修改文件；
-- GPT 主会话负责读取代码、执行工具、采用或拒绝 DeepSeek 意见。
+- DeepSeek 只看到 GPT 明确传入的 `prompt`/`context`，并以 `workspace_path` 作为当前工作目录；
+- sidecar 使用 `--sandbox danger-full-access`，可以读取、创建、修改和删除本机文件。`DEEPSEEK_ALLOWED_ROOTS` 仍校验传入的工作目录，但不再构成操作系统级的读写隔离；
+- GPT 主会话负责检查 DeepSeek 的文件改动、执行验证、采用或拒绝其意见。
 
-这种边界适合对抗辩论，也比把整个工作区发送给外部 Worker 更容易审计。若以后确实需要 DeepSeek 自主改文件，应另行设计隔离 worktree、工具权限和验证流程，不应悄悄放宽当前 `ask_deepseek` 的只读约束。
+这种模式适合需要 DeepSeek 直接落地修改的任务，但安全边界明显弱于只读模式：MCP 的工作目录校验不能阻止 full-access sidecar 访问其他本机路径。使用前应确认机器上没有需要保护的密钥或私有数据，并让 GPT 在提交结果前复核 diff 和测试。
 
 ### 4.3 DeepSeek Responses API 的当前限制
 
@@ -259,10 +259,12 @@ integrations/
 | `<repo-root>` | 用户克隆本仓库的位置 | 用户克隆本仓库的位置 | 保存安装器和 MCP 源码；可位于任意本地目录 |
 | `<codex-config-root>` | `$CODEX_HOME`，未设置时为 `$HOME/.codex` | `$env:CODEX_HOME`，未设置时为 `$env:USERPROFILE\.codex` | 保存主 `config.toml` 和隔离的 `deepseek-sidecar` 目录 |
 | `<key-file>` | `${XDG_CONFIG_HOME:-$HOME/.config}/deepseek/env` | `$env:USERPROFILE\.config\deepseek\env` | 本机保存 DeepSeek API Key；不得提交到 Git |
-| `<workspace-root>` | 默认是运行安装器时的当前目录 | 默认是运行安装器时的当前目录 | DeepSeek sidecar 唯一获准只读检查的根目录 |
+| `<workspace-root>` | 默认是运行安装器时的当前目录 | 默认是运行安装器时的当前目录 | DeepSeek sidecar 的默认工作目录；MCP 校验它位于允许根目录内，但 full-access 不提供文件系统级隔离 |
 | Node/Codex 可执行文件 | 从 `PATH` 查找，也可显式指定 Node | 从 `PATH` 查找，也可显式指定 Node | 安装器将解析后的绝对路径写入 MCP 配置 |
 
 最容易出错的是 `<workspace-root>`：如果从仓库外的目录启动安装器，默认授权根目录也会随之改变。共享配置时应推荐用户先进入希望 DeepSeek 检查的项目目录，或始终显式传入 `--allowed-root` / `-AllowedRoot`，不要复制另一台机器的绝对路径。
+
+如果一台机器上的多个项目都位于同一个父目录下，可以把 `DEEPSEEK_ALLOWED_ROOTS` 设为这个父目录，而不是每个项目单独配置一次。MCP 只要求传入的 `workspace_path` 通过 realpath 后位于允许根目录内；例如维护者当前 openness 环境的项目都在 `/user/work/yanjie` 下，因此允许根设为 `/user/work/yanjie` 后，`/user/work/yanjie/codes/PerturbDiff` 这样的 PBMC 项目也能正常调用 DS 复核文件。这个设置只是放宽入口校验，不会把 `danger-full-access` 重新变成文件系统沙箱。
 
 ## 6. Linux 配置
 
@@ -387,6 +389,8 @@ DEEPSEEK_ALLOWED_ROOTS = "<workspace-root>"
 # END use-subagents deepseek-hybrid
 ```
 
+`DEEPSEEK_ALLOWED_ROOTS` 可以是一个具体项目目录，也可以是包含多个授权项目的父目录。维护者当前 openness 部署使用 `/user/work/yanjie`，因为 PBMC、skills 和其他项目都位于这个父目录下；如果某台机器只有一个需要 DS 访问的仓库，继续使用该仓库本身作为允许根更容易审计。
+
 sidecar 目录中的 `config.toml` 由安装器生成，关键内容是：
 
 ```toml
@@ -397,7 +401,7 @@ forced_login_method = "api"
 model_reasoning_effort = "max"
 model_catalog_json = "<codex-config-root>/deepseek-sidecar/models.json"
 approval_policy = "never"
-sandbox_mode = "read-only"
+sandbox_mode = "danger-full-access"
 
 [model_providers.deepseek]
 name = "deepseek"
@@ -429,7 +433,7 @@ node integrations/deepseek-mcp/test.mjs
 node integrations/deepseek-mcp/test-configure.mjs
 ```
 
-第一项启动临时假的 `codex exec`，验证实际 sidecar 命令行包含 `--ephemeral`、`--sandbox read-only`、递归关闭、Flash 模型和 `model_reasoning_effort="max"`，并验证父 handoff、usage、工作区边界、子进程环境隔离、成功输出密钥脱敏和“不发送 `max_tokens`”。它还确认不会额外注入固定角色或 handoff 约束、非法超时不会启动子进程，也不再绕过项目 `.rules`。它不访问网络。
+第一项启动临时假的 `codex exec`，验证实际 sidecar 命令行包含 `--ephemeral`、`--sandbox danger-full-access`、递归关闭、Flash 模型和 `model_reasoning_effort="max"`，并验证父 handoff、usage、工作区边界、子进程环境隔离、成功输出密钥脱敏和“不发送 `max_tokens`”。它还确认不会额外注入固定角色或 handoff 约束、非法超时不会启动子进程，也不再绕过项目 `.rules`。它不访问网络。
 
 第二项验证旧 MCP 段迁移、sidecar `config.toml`/`models.json` 生成、主配置保留、备份和重复安装幂等性；如果主配置已有 DeepSeek 官方直连字段，则验证安装器会停止而不删除它。
 
@@ -501,6 +505,8 @@ node .\integrations\deepseek-mcp\live-test.mjs
 ```
 
 如果希望每次复杂计划都做对抗，可以把类似规则放进项目 `AGENTS.md`；不要要求把密钥、`.env` 或无关私有文件放进 `context`。
+
+维护者当前 openness 环境在 2026-08-03 做过一次跨项目 smoke test：主配置中的 `DEEPSEEK_ALLOWED_ROOTS` 设为 `/user/work/yanjie`，新建 PBMC 项目会话运行在 `/user/work/yanjie/codes/PerturbDiff`，并让 DS 只读核对项目根目录 `README.md`。结果为 `SUCCESS`：DS 确认文件存在并核对了前几行内容，没有创建、修改或删除项目文件，也没有再出现 `workspace_path is outside DEEPSEEK_ALLOWED_ROOTS`。
 
 ## 10. 安全策略
 
@@ -584,7 +590,7 @@ Codex / MCP：
 
 仓库自带测试用于检查实现契约，而不是证明某台用户设备已经配置成功：
 
-1. `test.mjs` 使用假的 `codex exec`，验证 MCP 只注册 `ask_deepseek`、handoff 不注入固定角色、默认 `max`、只读沙箱、环境隔离、工作区边界、超时清理和密钥脱敏；
+1. `test.mjs` 使用假的 `codex exec`，验证 MCP 只注册 `ask_deepseek`、handoff 不注入固定角色、默认 `max`、full-access 沙箱、环境隔离、工作区边界、超时清理和密钥脱敏；
 2. `test-configure.mjs` 验证主 GPT 设置保留、旧 MCP 迁移、sidecar 配置、官方目录哈希、备份和重复安装幂等性；
 3. `node --check` 与 `git diff --check` 用于发现 JavaScript 语法和补丁格式问题；
 4. 这些测试不访问真实 DeepSeek API，也不能验证用户设备的 PATH、代理、防火墙、Windows ACL 或上游账号状态。
@@ -598,7 +604,7 @@ Codex / MCP：
 3. `codex mcp get deepseek` 显示 MCP 已启用且工具允许列表只有 `ask_deepseek`；
 4. 用 `<sidecar-home>` 执行 `codex debug models`，确认 Flash/Pro、1,048,576 context、95% effective window 和 `low/high/max` 被当前 Codex 版本识别；
 5. 在允许产生少量 API 用量时运行一次 live test，确认实际 provider、Flash、Responses 和 `max` 链路；
-6. 完全重启 Codex，在新会话中要求 GPT 调用 `ask_deepseek`，确认 DeepSeek 能在授权 `<workspace-root>` 内完成只读取证。
+6. 完全重启 Codex，在新会话中要求 GPT 调用 `ask_deepseek`，确认 DeepSeek 能在授权 `<workspace-root>` 内读取并完成一项受控文件修改，再由 GPT 检查 diff。
 
 某一步通过不能替代其他步骤。例如离线测试通过只说明编排代码正确；`debug models` 通过只说明 Codex 能解析目录；只有 live test 才能证明密钥、网络和真实上游在该设备上可用。
 
@@ -608,11 +614,11 @@ Codex / MCP：
 
 ```bash
 CODEX_HOME="<sidecar-home>" \
-  "<codex-bin>" exec --ephemeral --json --sandbox read-only \
+  "<codex-bin>" exec --ephemeral --json --sandbox danger-full-access \
   --cd "<workspace-root>" --output-last-message "<temporary-output-file>" -
 ```
 
-`<sidecar-home>` 保存 DeepSeek 官方 provider 和 `models.json`；MCP 负责构造 handoff、选择授权工作目录、启动或取消子进程并抽取最终报告。任何设备都不应把 DeepSeek provider 直接覆盖到 GPT 主配置，也不应让 sidecar 默认拥有写权限。
+`<sidecar-home>` 保存 DeepSeek 官方 provider 和 `models.json`；MCP 负责构造 handoff、选择并校验工作目录、启动或取消子进程并抽取最终报告。任何设备都不应把 DeepSeek provider 直接覆盖到 GPT 主配置；如果使用当前 full-access 策略，应只在已明确授权且没有敏感数据的机器上启用。
 
 ### 13.4 升级纪律
 

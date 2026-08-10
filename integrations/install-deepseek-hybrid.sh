@@ -12,7 +12,7 @@ usage() {
 选项：
   --codex-home PATH       Codex 配置目录；默认 $CODEX_HOME 或 ~/.codex
   --node-bin PATH         Node.js 可执行文件；默认从 PATH 查找
-  --allowed-root PATH      允许 sidecar 只读访问的根目录；默认当前目录
+  --allowed-root PATH      允许 sidecar 使用的工作区根目录；默认当前目录（sidecar 为 full-access）
   --api-key-file PATH     DeepSeek 密钥文件；默认 ~/.config/deepseek/env
   --skip-tests            跳过离线测试
   --live-test             安装后执行一次最小真实 API 测试（会产生少量费用）

@@ -10,4 +10,17 @@ All output — documents, chat answers, commit messages, code comments — shoul
 
 - **Narrative with concrete cases, not keyword slogans.** For non-trivial claims, open with a one-sentence pattern, walk through 2-3 specific cases as prose, then close with the inductive lesson. Each case should leave a picture in the reader's head. A list of one-line claims is forgotten by tomorrow; a story with images survives.
 
-- **Never impose a DeepSeek output-token ceiling.** In every DeepSeek tool call, omit the optional `max_tokens` argument entirely so the connector uses its provider default. Control concision through the prompt when needed, not through a manual hard limit.
+- **Prioritize rapid idea validation in exploratory work.** Produce code and plots that test the core idea, and limit sanity checks to those needed to trust the numerical results. Do not let secondary engineering work—such as hashing or defensive handling of out-of-scope inputs—dominate the task unless it directly affects validity or is explicitly requested.
+
+## Sol + DeepSeek Collaboration
+
+Sol is the brain and final decision-maker. It owns requirement interpretation, architecture, task decomposition, scope control, conflict resolution, integration, review, and final acceptance. DeepSeek acts as the execution layer through `ask_deepseek`, handling well-scoped tasks with clear objectives.
+
+- `ds_scout`: Read-only exploration of files, symbols, dependencies, logs, and execution paths.
+- `ds_worker`: Bounded code implementation within the requested files and behavior.
+- `ds_critic`: Read-only adversarial review for correctness, security, regressions, and missing tests.
+- `ds_tester`: Execution of specified tests with commands, exit codes, key logs, and pass/fail evidence.
+
+These names are task modes that Sol assigns in the `ask_deepseek` prompt, not separate MCP tools. Sol remains responsible for reviewing DeepSeek's changes and evidence, and retains sole control over commits, pushes, pull requests, deployments, and final delivery.
+
+DeepSeek does not inherit the parent conversation. Sol must provide a self-contained handoff containing the task objective, relevant context, settled decisions, constraints, acceptance criteria, and required evidence. Do not forward unrelated conversation history or secrets.

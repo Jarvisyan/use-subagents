@@ -112,7 +112,7 @@ const checks = {
   exec: args[0] === "exec",
   ephemeral: args.includes("--ephemeral"),
   json: args.includes("--json"),
-  read_only: args.includes("--sandbox") && args.includes("read-only"),
+  full_access: args.includes("--sandbox") && args.includes("danger-full-access"),
   no_ignore_rules: !args.includes("--ignore-rules"),
   isolated_config: !args.includes("mcp_servers.deepseek.enabled=false"),
   isolated_environment: Boolean(process.env.CODEX_HOME) &&
@@ -127,7 +127,7 @@ const checks = {
 const allChecks = Object.values(checks).every(Boolean);
 const handoffPresent = input.includes("Parent task:\\nChallenge this plan") &&
   input.includes("Parent-agent handoff context:\\nThe plan has one assumption.") &&
-  !input.includes("read-only sidecar") &&
+  !input.includes("full-access sidecar") &&
   !input.includes("challenger");
 if (!outputPath) {
   process.stderr.write("missing output path");
@@ -158,7 +158,7 @@ async function main() {
     path.join(os.tmpdir(), "deepseek-sidecar-test-"),
   );
   const sidecarHome = path.join(temporaryRoot, "sidecar");
-  const workspace = path.join(temporaryRoot, "read-only-workspace");
+  const workspace = path.join(temporaryRoot, "test-workspace");
   fs.mkdirSync(sidecarHome, { recursive: true });
   fs.mkdirSync(workspace, { recursive: true });
   fs.writeFileSync(
@@ -212,6 +212,9 @@ async function main() {
       listed.result.tools[0].inputSchema.properties.reasoning_effort.enum,
       ["low", "high", "max"],
     );
+    assert.equal(listed.result.tools[0].annotations.readOnlyHint, false);
+    assert.equal(listed.result.tools[0].annotations.destructiveHint, true);
+    assert.equal(listed.result.tools[0].annotations.openWorldHint, true);
     assert.equal(
       Object.hasOwn(listed.result.tools[0].inputSchema.properties, "max_tokens"),
       false,

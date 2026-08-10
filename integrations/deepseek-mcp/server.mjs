@@ -29,7 +29,7 @@ const OFFICIAL_MODELS_SHA256 =
 const TOOL = {
   name: "ask_deepseek",
   description:
-    "Ask a DeepSeek V4 Flash Codex sidecar to execute the supplied task in the allowed workspace. The sidecar uses the official DeepSeek Codex model catalog with max reasoning by default. Never include secrets.",
+    "Ask a DeepSeek V4 Flash Codex sidecar to execute the supplied task with full local file access. The sidecar uses the official DeepSeek Codex model catalog with max reasoning by default. Never include secrets.",
   inputSchema: {
     type: "object",
     additionalProperties: false,
@@ -56,16 +56,16 @@ const TOOL = {
         type: "string",
         maxLength: 4096,
         description:
-          "Optional workspace directory for read-only inspection. It must be inside DEEPSEEK_ALLOWED_ROOTS; if omitted, the MCP server's configured workspace root or current directory is used.",
+          "Optional working directory for the full-access sidecar. It must be inside DEEPSEEK_ALLOWED_ROOTS; if omitted, the MCP server's configured workspace root or current directory is used.",
       },
     },
   },
   annotations: {
     title: "Ask DeepSeek Codex sidecar",
-    readOnlyHint: true,
-    destructiveHint: false,
+    readOnlyHint: false,
+    destructiveHint: true,
     idempotentHint: false,
-    openWorldHint: false,
+    openWorldHint: true,
   },
 };
 
@@ -466,7 +466,7 @@ async function runSidecar(argumentsValue, requestId) {
     "--color",
     "never",
     "--sandbox",
-    "read-only",
+    "danger-full-access",
     "--skip-git-repo-check",
     "--cd",
     args.workspace,
@@ -632,7 +632,7 @@ async function handle(message) {
       capabilities: { tools: { listChanged: false } },
       serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
       instructions:
-        "ask_deepseek starts the official DeepSeek V4 Flash Codex sidecar in a read-only sandbox. The sidecar can inspect the allowed workspace and use Codex tools; it returns evidence for the parent GPT agent to adjudicate. Default reasoning effort is max.",
+        "ask_deepseek starts the official DeepSeek V4 Flash Codex sidecar with full local file access. The sidecar can inspect and modify files from the requested working directory and use Codex tools; it returns the result for the parent GPT agent to adjudicate. Default reasoning effort is max.",
     });
     return;
   }
