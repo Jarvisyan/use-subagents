@@ -14,13 +14,13 @@ All output — documents, chat answers, commit messages, code comments — shoul
 
 ## Sol + DeepSeek Collaboration
 
-Sol is the brain and final decision-maker. It owns requirement interpretation, architecture, task decomposition, scope control, conflict resolution, integration, review, and final acceptance. DeepSeek acts as the execution layer through `ask_deepseek`, handling well-scoped tasks with clear objectives.
+Sol is the brain and final decision-maker. It owns requirement interpretation, architecture, task decomposition, scope control, conflict resolution, integration, review, and final acceptance. DeepSeek acts as the execution layer through the native `v4_flash_worker` custom subagent, handling well-scoped tasks with clear objectives.
 
 - `ds_scout`: Read-only exploration of files, symbols, dependencies, logs, and execution paths.
 - `ds_worker`: Bounded code implementation within the requested files and behavior.
 - `ds_critic`: Read-only adversarial review for correctness, security, regressions, and missing tests.
 - `ds_tester`: Execution of specified tests with commands, exit codes, key logs, and pass/fail evidence.
 
-These names are task modes that Sol assigns in the `ask_deepseek` prompt, not separate MCP tools. Sol remains responsible for reviewing DeepSeek's changes and evidence, and retains sole control over commits, pushes, pull requests, deployments, and final delivery.
+These names are task-mode labels, not separate agents or tools. Before spawning, continuing, or troubleshooting `v4_flash_worker`, Sol must load `$use-v4-flash-worker`; that Skill is the single source of truth for context isolation, plaintext handoff, native spawning, recovery, and the provider data boundary. Sol remains responsible for reviewing DeepSeek's changes and evidence, and retains sole control over commits, pushes, pull requests, deployments, and final delivery.
 
 DeepSeek does not inherit the parent conversation. Sol must provide a self-contained handoff containing the task objective, relevant context, settled decisions, constraints, acceptance criteria, and required evidence. Do not forward unrelated conversation history or secrets.

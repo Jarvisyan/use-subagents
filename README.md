@@ -116,7 +116,7 @@ Method 工作流接收已经确定的方法、创新定位、实现和论文上�
 
 这个仓库现在是通用 Codex 配置的单一源。`AGENTS.md`、`skill/solid-vibe-coding/`、`skill/experiment-layout/` 与 `skill/vibe-paper/` 进入 Git，供不同机器同步；`solid-vibe-coding` 与 `experiment-layout` 可由服务器的 `~/.codex` 通过符号链接引用，`vibe-paper` 只在本地论文写作环境安装。
 
-`integrations/` 当前保存可跨机器复用的 DeepSeek Codex sidecar MCP、官方模型目录、安装器和测试，因此进入 Git；安装、Windows/Linux 配置、验证和回滚方法见 [GPT–DeepSeek 混合接入指南](DEEPSEEK_HYBRID.md)。`skill/cluster-routing/` 与 `docs/` 仍属于服务器本地内容，由 `.gitignore` 排除。外部模型或服务器工具仍按本机配置显式使用，不成为通用 Skills 的隐式依赖。
+DeepSeek 已改用上游 `v4_flash_worker` 原生 custom subagent；本仓库不再维护 MCP、sidecar 或自研 `ask_deepseek` 适配层。配置、验收、数据边界与使用边界见 [GPT–DeepSeek 原生子代理接入报告](DEEPSEEK_HYBRID.md)。主任务保持 OpenAI/GPT，DeepSeek 只存在于个人 Codex 配置的独立 child 中；外部模型或服务器工具仍按本机配置显式使用，不成为通用 Skills 的隐式依赖。`skill/cluster-routing/` 与 `docs/` 仍属于服务器本地内容，由 `.gitignore` 排除。
 
 原 `multi-subagents` 原型已经由职责更单一的 `solid-vibe-coding` 与 `experiment-layout` 取代。通用 Skill 只保留跨任务稳定的 meta 约束；服务器环境和 provider 实现留在本地配置层。
 
