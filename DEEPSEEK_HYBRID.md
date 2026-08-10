@@ -1,130 +1,119 @@
-# GPT–DeepSeek 原生子代理接入报告
+# Codex 原生 DeepSeek 子代理：配置与迁移说明
 
-## 1. 最终结论
+## 先确认本机路径
 
-截至 2026-08-10，DeepSeek 已从 MCP/sidecar 迁移为 Codex 原生 custom subagent：
+本机真正的 Codex home 是：
 
-- GPT-5.6 Sol 继续作为父任务模型，ChatGPT 登录和顶层 provider 未改变；
-- DeepSeek 只在独立的 `v4_flash_worker` child 中运行；
-- child 的 provider/model 已验证为 `deepseek/deepseek-v4-flash`；
-- child 使用原生 Subagents 生命周期、独立 task、callback 和等待机制；
-- 跨 provider 任务正文由一次性 plaintext `SubagentStart` Hook 交付；
-- 旧 DeepSeek MCP、Codex sidecar、自研 `ask_deepseek` 适配层及回滚备份已永久删除。
+```text
+/user/work/yanjie/.codex
+```
 
-最终 smoke test 已通过。失败的第一次 smoke 也定位清楚：DeepSeek 原生 child 实际启动成功，但 Hook 信任没有持久化，导致 stage 后的 assignment 没有被消费。信任状态持久化后，新顶层任务通过了上游规定的完整测试。
+本机 shell 的 `~` 展开为 `/home/yanjie`，因此 `/user/work/yanjie/.codex` **不等于** `~/.codex`。本文描述本机状态时全部使用绝对路径；为其他设备提供通用步骤时使用 `<codex-home>`，并要求先由 Codex App/CLI 确认真正的 `codexHome`，不能猜测为 `~/.codex`。
+
+本文足以作为其他设备的迁移说明，但不替代上游安装器。跨设备安装采用两层：先让 Codex 严格执行上游 `install-with-codex.md`，再应用本文列出的本机 DIY 差异。不要另写一套复制上游 Agent、Hook 和 Skill 的 Windows/Linux 安装器；它既会与上游漂移，也无法安全自动完成必须由用户审阅的 `/hooks` 信任。
+
+---
+
+## 问题一：原生接口相比 MCP 有什么优势？
+
+### 1.1 原生接口解决了什么
+
+旧 MCP 方案的调用链是“GPT 父任务 → MCP tool → 独立 Codex sidecar → DeepSeek”。每次调用都要启动另一套 Codex 运行时，MCP 负责传入任务、等待 sidecar、收集最终文本。它能用，但 Codex 只把整个过程看成一次工具调用。
+
+原生方案把 DeepSeek 注册为真正的 custom subagent：
 
 ```text
 GPT-5.6 Sol 父任务
   │
-  ├─ 加载 $use-v4-flash-worker
-  ├─ 形成自包含 parent assignment
-  ├─ stage 到本机一次性 pending
+  ├─ stage 一份自包含 assignment
   └─ native spawn: v4_flash_worker, fork_turns="none"
        │
-       ├─ trusted SubagentStart Hook 原子 claim assignment
-       ├─ DeepSeek Responses API: deepseek-v4-flash
-       └─ native callback 返回父任务审查和整合
+       ├─ SubagentStart Hook 注入 assignment
+       ├─ DeepSeek V4 Flash 独立运行
+       └─ Codex native callback 返回父任务
 ```
 
-## 2. 当前配置
+具体优势分为三类。
 
-### 2.1 已安装工件
+#### Codex 原生管理
 
-| 路径 | 作用 |
-| --- | --- |
-| `~/.codex/agents/v4-flash-worker.toml` | 独立 agent、DeepSeek provider、模型、上下文窗口和沙箱 |
-| `~/.codex/hooks.json` | 精确匹配 `^v4_flash_worker$` 的 `SubagentStart` Hook |
-| `~/.codex/hooks/codex-deepseek-subagent/plaintext_handoff.py` | stage、claim、注入、过期和失败状态处理 |
-| `~/.codex/skills/use-v4-flash-worker/` | 父任务侧的选择、交付、等待、恢复和数据边界协议 |
-| `~/.codex/models.json` | DeepSeek 官方模型能力目录，仅由该 child 引用 |
-| `~/.codex/AGENTS.md` | 只保留一条按需加载上述 Skill 的路由索引 |
-| `~/.codex/config.toml` | Codex 正式保存的 Hook enabled/trusted 状态 |
+- 子任务真实显示在 Subagents 面板，而不是伪装成 MCP 工具结果；
+- Codex 原生管理 child identity、thread、取消、等待和 callback；
+- 父任务可以在 child 运行时继续工作，只有依赖结果时才等待；
+- 子任务元数据可以直接核验 `agent_role`、provider 和 model。
 
-agent 的关键字段为：
+#### 少一层运行时和配置
 
-```toml
-name = "v4_flash_worker"
-model_provider = "deepseek"
-model = "deepseek-v4-flash"
-model_reasoning_effort = "max"
-model_catalog_json = "/user/work/yanjie/.codex/models.json"
-model_context_window = 1000000
-sandbox_mode = "read-only"
+- 不再维护 MCP server、stdio transport、tool schema 和超时包装；
+- 不再为每次调用启动第二个 Codex sidecar；
+- 不再维护 sidecar 专用 `CODEX_HOME`、wrapper 和回传协议；
+- Codex 自己提供 child 的工具循环和生命周期。
+
+#### 上下文边界更明确
+
+- 每次使用 `fork_turns="none"` 创建独立 child，不自动复制父对话；
+- 父任务只发送本次需要的目标、必要背景、范围或限制和期望产物；路径、允许的修改与验证证据按任务需要补充；
+- DeepSeek 的最终回执通过原生 callback 进入父任务后续上下文；
+- 不需要为保持“独立判断”而人为新开 MCP context。
+
+### 1.2 原生接口不是无条件更简单
+
+当前 OpenAI 与 DeepSeek 跨 provider 时，原生 spawn 消息中的加密任务正文不能可靠传递。因此仍需要一个 one-shot plaintext `SubagentStart` Hook。这个 Hook 会让 assignment 在本机状态目录中短暂以明文存在，所以它不是秘密信道。
+
+上游 agent 默认偏只读；本机已经按实际用途把 worker 调整为 `sandbox_mode = "danger-full-access"`，使其能处理项目外文件、代码写入、Shell/SSH 和落盘绘图。审批是另一个独立维度：本机保留 `approval_policy = "on-request"`，并用 `approvals_reviewer = "auto_review"` 自动审查需要审批的操作，没有配置成 `never`。
+
+---
+
+## 问题二：是否按上游指南安装和测试？做了哪些 DIY？
+
+### 2.1 遵循的上游基线
+
+安装和测试直接依据：
+
+- 仓库：<https://github.com/Utopia-V/codex-deepseek-subagent>
+- 安装说明：`prompts/install-with-codex.md`
+- 测试说明：`prompts/quick-smoke-test.md`
+- 安装时核对的提交：`1377b7655ea98ed50a5131172b579b56ed744793`
+
+保留了上游的关键设计：
+
+1. agent 的真实名称仍是 `v4_flash_worker`，没有继续改名为 `ask_deepseek`；
+2. provider/model 为 `deepseek/deepseek-v4-flash`，wire API 为 Responses；
+3. matcher 精确为 `^v4_flash_worker$`；
+4. parent 先 stage，成功后才 native spawn；
+5. V2 spawn 使用 `fork_turns="none"`；
+6. handoff 保持 one-shot、at-most-once 语义；
+7. smoke 不使用直接 API、替代 provider、另一个 Codex CLI 或 MCP fallback。
+
+### 2.2 本机实际安装的 DeepSeek 工件
+
+| 工件 | 本机路径 | 作用 |
+| --- | --- | --- |
+| custom agent | `/user/work/yanjie/.codex/agents/v4-flash-worker.toml` | DeepSeek provider、模型、catalog、上下文和沙箱 |
+| Hook 配置 | `/user/work/yanjie/.codex/hooks.json` | 注册 `SubagentStart` matcher |
+| Hook 脚本 | `/user/work/yanjie/.codex/hooks/codex-deepseek-subagent/plaintext_handoff.py` | stage、claim、注入和状态恢复 |
+| Skill 源 | `/user/work/yanjie/tools/use-subagents/skill/use-v4-flash-worker/` | Git 管理的父任务调用协议 |
+| Skill 安装链接 | `/user/work/yanjie/.codex/skills/use-v4-flash-worker` | 指向仓库 Skill 源的软链接 |
+| 模型目录 | `/user/work/yanjie/.codex/models.json` | DeepSeek context、reasoning 档位和工具元数据 |
+| Hook 信任 | `/user/work/yanjie/.codex/config.toml` | Codex 持久化的 enabled/trusted 状态 |
+
+API key 继续从 Codex 进程环境中的 `DEEPSEEK_API_KEY` 读取，没有写入 Prompt、TOML、文档或仓库。
+
+### 2.3 只安装了一个 DeepSeek Skill
+
+这次原生接入只新增：
+
+```text
+use-v4-flash-worker
 ```
 
-provider 使用 `https://api.deepseek.com` 的 Responses API，并从进程环境读取 `DEEPSEEK_API_KEY`。现有 API 环境被直接复用；密钥没有写入 Prompt、TOML、文档或仓库。
+Codex 中显示的 `.system`、Google Drive、Sites、Zotero、`solid-vibe-coding`、`experiment-layout`、`cluster-routing` 等 Skills 都不是这次 DeepSeek 安装创建的。
 
-### 2.2 Python 与 uv
+`use-v4-flash-worker` 是 **GPT parent 侧的传输 Skill**，不是第二套分工规则。Sol/DeepSeek 职责和四个 `ds_*` 模式放在 global rule；这个 Skill 只负责独立 context、stage、精确 spawn、一次等待、失败恢复和 DeepSeek 数据边界。它也不是 DeepSeek child 必须执行的业务 Skill。
 
-Hook 命令固定使用 `/usr/bin/python3`，不依赖项目的 `.venv`、`uv run` 或当前 shell 是否激活虚拟环境。Hook 脚本只使用 Python 标准库，因此项目级 uv 环境不会影响后续交互；反过来，Hook 也不会污染项目依赖。
+之所以不能只保留 global rule，是因为当前跨 provider handoff 有一段有状态的调用协议：必须先 stage，确认 one-shot pending 成功，再以 `fork_turns="none"` 精确 spawn，并正确处理 claimed、quarantine 和 callback。把整套状态机常驻 global rule 会重复耗费每个任务的上下文；完全删掉又容易退回曾经出现过的“child 启动了但收不到 assignment”。因此当前边界是：**global rule 管谁做什么，Skill 管原生 Hook 怎么交付。**
 
-### 2.3 `models.json` 是否需要
-
-需要，但不能把它配置成 GPT 父任务的全局 catalog。
-
-上游 custom-agent TOML 已声明 provider、模型和名义 context window，但 Codex 对未知第三方模型会使用 fallback metadata。第一次成功 smoke 的 child token 事件仍显示 fallback context，而 OpenAI Codex 的已知问题也表明：缺少 catalog 时，即使配置 `model_reasoning_effort`，运行时仍可能不向第三方 Responses provider 发送 reasoning 字段。
-
-因此本机保留 DeepSeek 官方 `~/.codex/models.json`，但只在 `v4-flash-worker.toml` 中通过 `model_catalog_json` 引用。顶层 `~/.codex/config.toml` 不设置全局 `model_catalog_json`，所以 GPT 父任务的 `/model`、provider 和登录状态不会被替换。
-
-无付费 `codex debug models` 已确认该目录实际注册：1,048,576 context、`low/high/max` 三档、`max` 可选、Responses 所需工具元数据。新增 catalog 后需要完整重启 Codex App，使长驻 app-server 丢弃旧模型目录缓存。
-
-## 3. 与上游手册的一致性
-
-安装和测试依据：
-
-- `Utopia-V/codex-deepseek-subagent` 当前 `main`；
-- 安装说明 `prompts/install-with-codex.md`；
-- 测试说明 `prompts/quick-smoke-test.md`；
-- 安装时核对的上游提交为 `1377b7655ea98ed50a5131172b579b56ed744793`。
-
-严格遵循的部分包括：
-
-1. 使用真实 agent 名 `v4_flash_worker`，没有继续把 MCP 名称冒充原生 agent；
-2. 使用独立 child 配置，不修改 GPT 父任务的顶层 provider/model；
-3. 使用 `deepseek-v4-flash`、Responses wire API 和 1,000,000 context window；
-4. 使用 one-shot plaintext handoff、精确 matcher 和 at-most-once 消费语义；
-5. 父任务先 stage，成功后才以 `fork_turns="none"` 原生 spawn；
-6. 不使用直接 API、替代 provider、另一个 Codex CLI 或 MCP fallback；
-7. 用全新顶层任务运行官方 quick smoke，并核对子任务元数据和 pending 消费。
-
-### 3.1 本机自适配
-
-只有两项本机适配：
-
-- 按用户明确要求，在 agent TOML 增加 `model_reasoning_effort = "max"`，并让该 child 私有引用 DeepSeek 官方 `models.json`；这既避免 underthinking，也绕开第三方 fallback metadata 丢弃 reasoning/context 能力的问题。
-- 用户已明确执行 `/hooks` 信任，但 Codex 实际仍报告 `untrusted`；因此通过 Codex 正式配置接口持久化该 Hook 的 enabled/trusted 状态。没有绕过 Hook，也没有关闭安全门。
-
-没有保留早期自研的 `ask_deepseek` 整体改名。该名称同时牵涉 agent、matcher、状态文件、Skill 和 smoke oracle；继续维护改名分支会偏离现成上游并增加故障面。当前唯一真实身份是 `v4_flash_worker`。
-
-## 4. 旧 MCP 配置的处理
-
-### 4.1 复用的内容
-
-旧 MCP 中真正需要延续的只有 DeepSeek API 凭据及其外部环境注入方式。模型用途仍是 `deepseek-v4-flash`，但 provider 配置现在属于独立 agent，不再属于 MCP sidecar。
-
-### 4.2 不再需要的内容
-
-以下组件已被原生 child 生命周期替代：
-
-- MCP server 和 `ask_deepseek` MCP tool schema；
-- 每次调用启动的第二个 Codex sidecar；
-- sidecar 专用 `CODEX_HOME` 和 sidecar 模型目录副本；当前只保留原生 child 私有引用的官方 catalog；
-- MCP 请求超时、stdio transport 和 wrapper；
-- 自研 `ask_deepseek` native 安装器、Hook、Skill 和测试分支。
-
-`codex mcp list` 当前只剩 `openaiDeveloperDocs`，不存在 DeepSeek MCP。旧 sidecar、DeepSeek/ask-deepseek 回滚备份和仓库中的对应实现文件已按用户授权永久删除，不再具备回滚能力。
-
-## 5. Context、Skill 与推理配置
-
-### 5.1 child context
-
-每次 spawn 都是独立 child context，不复用父任务完整对话。V2 调用使用 `fork_turns="none"`；这个字段属于每次 spawn 的原生接口参数，不是 custom-agent TOML 的持久化字段，因此由 `$use-v4-flash-worker` Skill 按需约束，没有重复写入 global rule 浪费常驻 token。
-
-父任务必须交付一份自包含 assignment，至少包含目标、必要上下文、范围、排除项、权限、验收标准、证据和停止条件。无关聊天历史、密钥和私有数据不应发送给 DeepSeek。
-
-### 5.2 Skill
-
-原生 child 能看到运行时提供的 Skill 清单，但不能假设模型一定会自动选择正确 Skill。如果任务依赖某个业务 Skill，父 assignment 应明确写出：
+如果 child 的业务任务依赖另一个 Skill，parent assignment 才应显式写：
 
 ```text
 required_skill: $skill-name
@@ -132,70 +121,242 @@ Read the complete SKILL.md before acting.
 Return SKILL_USED and SKILL_PATH_READ.
 ```
 
-`$use-v4-flash-worker` 本身是父任务侧的传输 Skill，不是 child 的业务 Skill。global rule 只负责在考虑、创建、继续或排障该 worker 时加载它；详细 stage、spawn、等待和恢复协议都留在 Skill 中按需读取。
+### 2.4 global rule 到底改了什么
 
-### 5.3 上下文窗口和思考强度
+上游安装器修改了个人全局规则文件：
 
-- context window 由 agent TOML 和官方 catalog 共同声明；Codex 实际 catalog 值为 1,048,576，无需每次 Prompt 重复声明；
-- DeepSeek child 的默认 reasoning effort 已本机覆盖为 `max`，catalog 同时声明 `max` 为受支持档位；
-- smoke 验证的是任务交付和原生 provider/model 边界，不依赖父任务把完整历史传给 child。
+```text
+/user/work/yanjie/.codex/AGENTS.md
+```
 
-## 6. Bug、修复与测试证据
+global rule 保留用户要求的稳定协作约定，并已同步到仓库源 `AGENTS.md` 与实际个人全局文件 `/user/work/yanjie/.codex/AGENTS.md`：
 
-### 6.1 第一次 smoke 为什么失败
+1. Sol 负责需求、架构、分解、范围、冲突、整合、审查和最终验收；
+2. DeepSeek 是高频执行层，优先承担边界明确的文件读写、代码、Shell/SSH、日志、绘图、提取和普通测试；
+3. `ds_scout`、`ds_worker`、`ds_critic`、`ds_tester` 是 assignment 中的任务模式，不是四个不同 agent；
+4. assignment 必须把目标、必要上下文、范围或限制和期望产物描述清楚；只有任务确实需要时才补充路径、允许的修改、证据或停止条件；
+5. DeepSeek 不继承父对话，Sol 必须形成自包含 handoff，并保留最终审查、Git、发布和部署权。
 
-第一次测试中：
+global rule 只用一句索引要求 spawn 前读取 `$use-v4-flash-worker`。详细的 `fork_turns="none"`、stage、等待和恢复状态机仍按需从 Skill 读取，不在常驻规则中重复。
 
-1. stage 成功，pending 文件存在；
-2. 原生 child 成功创建；
-3. 子任务元数据确认为 `agent_role=v4_flash_worker`、`model_provider=deepseek`、`model=deepseek-v4-flash`；
-4. DeepSeek 返回“缺少任务契约”；
-5. pending 没有被消费。
+### 2.5 本机 DIY 改动
 
-这证明原生 DeepSeek 接口本身是通的，故障只在 `SubagentStart` Hook 没有运行。Codex 的 `hooks/list` 随后直接给出根因：相关 Hook 在主项目和 smoke worktree 中都仍是 `untrusted`。
+相对上游有六项有意适配：
 
-### 6.2 修复
+1. **固定 `max`**：在 agent TOML 增加 `model_reasoning_effort = "max"`。
+2. **child 私有模型目录**：增加 `model_catalog_json = "/user/work/yanjie/.codex/models.json"`。缺少 catalog 时，Codex 会对未知第三方模型使用 fallback metadata，可能没有真正应用 1M context 或 reasoning effort。
+3. **持久化 Hook 信任**：用户已经执行 `/hooks` 信任，但运行时仍报告 `untrusted`；后来通过 Codex 正式配置接口持久化为 trusted。
+4. **Skill Git 化**：上游默认复制到 Codex home；本机改为仓库保存源文件、Codex home 使用软链接。
+5. **扩大文件系统权限但保留审批**：worker 使用 `sandbox_mode = "danger-full-access"`，同时设置 `approval_policy = "on-request"` 与 `approvals_reviewer = "auto_review"`。读写范围、是否需要审批、由谁审查是三个独立配置，没有用 `never` 跳过审批。
+6. **预授权 parent handoff 状态目录**：`stage` 在 DS child 启动前由 Sol 父任务执行，因此它受父任务 workspace sandbox 约束。本机已在顶层 `config.toml` 把用户明确授权的 `/user/work/yanjie` 加入 `sandbox_workspace_write.writable_roots`，覆盖其中的 `.local/state/codex/plaintext-subagent-handoff`，不再先失败再申请临时权限。
 
-用户已经明确授权信任该 Hook，因此把信任通过 Codex 的正式配置接口写入 `~/.codex/config.toml`，并重新查询两个工作目录。两边都返回：
+Hook 脚本使用绝对路径 `/usr/bin/python3`，只依赖标准库。项目是否使用 uv、是否激活 `.venv` 都不会影响 Hook。
+
+---
+
+## 问题三：smoke 为什么失败？一键配置的坎在哪里？
+
+### 3.1 失败现象
+
+第一次付费 smoke 中：
+
+1. `v4_flash_worker` 原生 child 成功创建；
+2. 子任务元数据确认 provider/model 是 `deepseek/deepseek-v4-flash`；
+3. DeepSeek 正常返回，但报告没有收到 `BEGIN PARENT ASSIGNMENT`；
+4. stage 生成的 pending 文件仍存在，没有被 Hook 消费。
+
+这证明原生 DeepSeek 接口和 API 都是通的，故障只发生在 Hook 交付边界。
+
+### 3.2 直接根因
+
+Codex `hooks/list` 对主项目和 smoke worktree 都返回：
 
 ```text
 enabled = true
-trustStatus = trusted
+trustStatus = untrusted
 matcher = ^v4_flash_worker$
 ```
 
-随后在隔离临时状态目录完成无付费验证：stage 成功、Hook 输出完整 `BEGIN/END PARENT ASSIGNMENT`、pending 被消费，只留下空锁文件。
+也就是说，文件和 matcher 都正确，但 Codex 的安全门不允许执行 Hook。UI 中执行过 `/hooks` 并不等于远端这套 `/user/work/yanjie/.codex` 已经持久化信任。
 
-### 6.3 修复后官方 smoke
+### 3.3 解决方式
 
-在全新顶层 GPT-5.6 Sol 任务中严格执行上游 `quick-smoke-test.md`，结果为：
+在用户明确授权信任后，通过 Codex 正式配置接口把该 Hook 的 enabled/trusted 状态写入：
 
-- 独立原生 child：通过；
-- `agent_role=v4_flash_worker`：通过；
-- `model_provider=deepseek`：通过；
-- `model=deepseek-v4-flash`：通过；
-- 新鲜 marker 精确返回且只出现一次：通过；
-- 算术结果 `323`：通过；
-- pending one-shot 消费，无 claimed/quarantine：通过；
-- native callback 返回父任务：通过；
-- 没有替代 provider、直接 API、另一个 Codex CLI 或重试：通过。
+```text
+/user/work/yanjie/.codex/config.toml
+```
 
-因此当前配置已通过真正的跨 provider 原生子代理验收，而不只是 UI 卡片或本地文件检查。
+重新查询后，主项目与 smoke worktree 都返回 `trustStatus = trusted`。随后先用隔离临时目录做无付费 stage→Hook→消费测试，再在全新顶层 GPT-5.6 Sol 任务中运行官方 quick smoke。
 
-在 smoke 通过后新增的官方 catalog 没有再次产生付费请求；无付费 `codex debug models` 已验证 JSON 可解析，并正确暴露 `deepseek-v4-flash` 的 1M context、工具能力与 `max` reasoning 元数据。完整重启 App 后，后续新 child 会加载该最终目录。
+修复后的 smoke 同时满足：
 
-## 7. 使用边界
+- 原生 `v4_flash_worker` child；
+- provider/model 为 `deepseek/deepseek-v4-flash`；
+- marker 精确返回且只出现一次；
+- 算术结果为 `323`；
+- pending 被一次性消费；
+- callback 返回父任务；
+- 没有直接 API、替代 provider、其他 Codex CLI 或重试。
 
-适合交给 `v4_flash_worker` 的任务是边界明确、原始材料较多、最终结论较短的读取、检索、日志分析、代码审查、枚举、提取和普通只读测试。GPT 父任务继续负责需求解释、架构、范围控制、重要判断、验证、commit/push/PR、部署和最终交付。
+### 3.4 其他容易让“一键安装”停住的边界
 
-当前上游 agent 默认 `sandbox_mode = "read-only"`。因此它可以分析代码和执行允许的只读命令，但不能直接落盘修改项目。若以后确实要让 DeepSeek 承担代码写入、SSH 变更或生成图文件，需要单独评估并显式扩大 custom-agent 权限；这不是本轮严格上游安装的一部分。
+#### Codex home 不是 shell home
 
-调度时遵守以下边界：
+本机 `~` 是 `/home/yanjie`，Codex home 却是 `/user/work/yanjie/.codex`。如果安装器、Hook、Skill 和信任状态落在不同目录，会出现“文件都在，但 App 不执行”的假安装。
 
-1. 先加载 `$use-v4-flash-worker`，再 stage；
-2. stage 失败时绝不 spawn；
-3. 只用精确 `agent_type=v4_flash_worker` 和 `fork_turns="none"`；
-4. 运行中依靠原生 callback 或一次任务尺度等待，不短轮询；
-5. missing assignment、claimed/quarantine 或 callback 丢失都视为 transport failure；
-6. 不静默回退到 MCP、直接 API、其他 provider 或另一个 Codex CLI；
-7. assignment 会短暂以 plaintext 存在本机状态目录，不能把它当作秘密信道。
+#### stage 状态目录在项目沙箱之外
+
+handoff 默认写入：
+
+```text
+/user/work/yanjie/.local/state/codex/plaintext-subagent-handoff
+```
+
+这一步发生在 Sol 父任务，和 `v4_flash_worker` 自身的 `danger-full-access` 无关。此前每次调用都会先遇到项目外只读，再通过临时权限继续；本机现已在 `/user/work/yanjie/.codex/config.toml` 持久化：
+
+```toml
+[sandbox_workspace_write]
+writable_roots = ["/user/work/yanjie"]
+```
+
+这是用户明确授权该目录树全部可写后的本机选择。其他设备应至少把实际 handoff 状态目录加入 parent 的 writable roots；不要无条件照抄一个比用户授权更宽的根目录。配置只影响新建或重新加载权限的任务，已有任务仍可能保留旧 sandbox 快照。stage 失败时仍不能 spawn。
+
+#### Hook 和 model catalog 有会话缓存
+
+修改 agent TOML、Hook、Skill、信任、权限或 `models.json` 后，先使用全新顶层任务测试；如果 App 仍未发现新配置，再完整重启。旧任务可能继续使用旧快照。
+
+#### 不能只看 Subagents 卡片
+
+验收必须同时核对 `agent_role`、provider/model、assignment marker、真实工具行为、pending 消费和 callback。只看到一张 child 卡片不能证明跨 provider handoff 已成功。
+
+---
+
+## 问题四：在新设备或已有 MCP 的设备上怎么重新配置？
+
+不能只参考前面的原理说明；应按下面的顺序执行。上游安装手册是跨平台、幂等合并和本地协议验证的基线，本节只记录本机验证后的差异层。
+
+不另建完整“一键脚本”的原因是：上游会按 Windows 与 POSIX 分别选择 agent、Hook 和密钥读取方式，还要保留目标设备已有的 `hooks.json`、`AGENTS.md` 和 `config.toml`；最后的 Hook trust 也必须由用户本人审阅。把这些重新实现为本仓库脚本会形成第二套安装器。当前最短且可维护的路径就是下面的上游安装 Prompt，加一段明确的本机差异配置。
+
+### 4.1 第一步：确认设备边界
+
+1. 确认 Codex App/CLI 真正报告的 `<codex-home>`，不要直接假设为 `~/.codex`。
+2. 确认 GPT 父任务当前 model/provider 和 ChatGPT 登录保持不变。
+3. 在进程环境中准备 `DEEPSEEK_API_KEY`，不得把 key 写入 Prompt 或 Git。
+4. 确认 `/models` 或 DeepSeek 官方文档仍暴露 `deepseek-v4-flash`。
+
+### 4.2 第二步：严格执行上游安装
+
+在一个新的顶层 Codex 任务中执行：
+
+```text
+请读取并严格执行
+https://raw.githubusercontent.com/Utopia-V/codex-deepseek-subagent/main/prompts/install-with-codex.md
+为我安装其中的 DeepSeek V4 Flash subagent。保留当前主模型、provider 和 ChatGPT
+登录，不得索要或输出 API key；完成无付费调用的本地验证后停止，暂不运行 smoke
+test。
+```
+
+先确认上游安装生成 agent、Hook、Skill 和 managed global rule。不要在这一阶段调用 DeepSeek。
+
+### 4.3 第三步：应用本项目的必要适配
+
+#### 使用真实 `<codex-home>`
+
+把所有 agent、Hook、Skill、信任和模型目录路径替换为该设备实际的绝对路径。Windows App、WSL CLI、远端 SSH Codex 可能分别拥有不同的 Codex home，必须分别安装和信任。
+
+#### 配置模型目录和 `max`
+
+将 DeepSeek 官方 Codex `models.json` 放入：
+
+```text
+<codex-home>/models.json
+```
+
+在 `<codex-home>/agents/v4-flash-worker.toml` 的模型字段附近增加：
+
+```toml
+model_reasoning_effort = "max"
+model_catalog_json = "<codex-home>/models.json"
+```
+
+不要在 GPT 顶层 `config.toml` 设置全局 `model_provider=deepseek` 或全局 `model_catalog_json`；catalog 只由 DeepSeek child 引用。
+
+#### 按用途配置 worker 权限
+
+本机需要 DeepSeek 高频执行文件读写、Shell/SSH、绘图和测试，因此在 `<codex-home>/agents/v4-flash-worker.toml` 使用：
+
+```toml
+sandbox_mode = "danger-full-access"
+approval_policy = "on-request"
+approvals_reviewer = "auto_review"
+```
+
+这不是上游只读基线的必选项。其他设备如果只让 DS 做检索和审查，应保留较小沙箱；如果扩大读写，也不要顺手改成 `approval_policy = "never"`。
+
+#### 预授权 parent 的 handoff 状态目录
+
+worker 权限不能解决 spawn 前的 stage 写入。Linux/macOS 默认状态目录为 `${XDG_STATE_HOME:-$HOME/.local/state}/codex/plaintext-subagent-handoff`，Windows 默认位于 `%LOCALAPPDATA%\Codex\plaintext-subagent-handoff`。把该目录或用户明确授权的父目录加入顶层 `<codex-home>/config.toml`：
+
+```toml
+[sandbox_workspace_write]
+writable_roots = ["<authorized-parent-or-exact-handoff-path>"]
+```
+
+本机使用 `/user/work/yanjie`；其他设备必须按自己的授权范围填写。该设置属于 Sol parent 的 workspace sandbox，不要误加到 `v4-flash-worker.toml`。
+
+#### 把 Skill 纳入 Git
+
+把上游生成的 Skill 源移动到配置仓库：
+
+```text
+<config-repo>/skill/use-v4-flash-worker/
+```
+
+然后让：
+
+```text
+<codex-home>/skills/use-v4-flash-worker
+```
+
+成为指向仓库源目录的软链接。不同设备的仓库绝对路径可能不同，所以软链接本身不进入 Git，只同步 `skill/use-v4-flash-worker/` 源文件。
+
+#### 信任 Hook
+
+在实际使用该 `<codex-home>` 的 Codex App/CLI 中执行 `/hooks`，审阅并信任精确 matcher `^v4_flash_worker$`。随后用 `hooks/list` 确认实际状态是 `trusted`，不能只依赖 UI 操作成功提示。
+
+### 4.4 第四步：已有 MCP 设备的迁移顺序
+
+已有 DeepSeek MCP 时，推荐先并行安装原生 child，暂时不删除 MCP：
+
+1. 安装原生 agent、Hook、Skill 和 catalog；
+2. 新开顶层任务；若配置仍未重新发现，再完整重启 App；
+3. 运行一次全新顶层官方 smoke；
+4. 验收全部通过后，删除 DeepSeek MCP 注册、sidecar 和 wrapper；
+5. 再运行 `codex mcp list`，确认不再出现 DeepSeek。
+
+本机已经按用户明确授权永久删除旧 MCP、sidecar 和所有回滚备份，因此没有回滚能力。其他设备是否保留短期备份，应由该设备所有者单独决定。
+
+### 4.5 第五步：运行唯一一次官方 smoke
+
+在全新顶层任务中执行；如果新任务仍未加载最终配置，再重启 App 后重试：
+
+```text
+请读取并严格执行
+https://raw.githubusercontent.com/Utopia-V/codex-deepseek-subagent/main/prompts/quick-smoke-test.md
+测试刚安装的 v4_flash_worker。不得使用替代 provider、直接 API 或另一个 Codex
+CLI。
+```
+
+验收清单：
+
+1. stage 成功；
+2. pending 被 Hook 消费；
+3. child 的 `agent_role=v4_flash_worker`；
+4. provider/model 为 `deepseek/deepseek-v4-flash`；
+5. child 收到完整 `BEGIN/END PARENT ASSIGNMENT`；
+6. marker 和测试结果符合上游 oracle；
+7. native callback 返回父任务；
+8. 没有 follow-up、重试或替代传输。
+
+满足以上条件后，才可以认为设备完成了原生 DeepSeek 迁移。
