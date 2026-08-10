@@ -1,36 +1,40 @@
 ---
 name: use-v4-flash-worker
-description: Dispatch the DeepSeek-backed v4_flash_worker through the installed one-shot plaintext SubagentStart Hook. Use immediately before spawning, continuing, or troubleshooting this worker; it governs plaintext staging, native fork_turns=none spawning and return, one-shot delivery-state recovery, and the configured provider/DeepSeek data boundary. Stable Sol/DeepSeek routing and task-mode roles belong in global AGENTS.md, not here.
+description: Use when Sol dispatches, continues, or troubleshoots a DeepSeek-backed v4_flash_worker job.
 ---
 
 # Use V4 Flash Worker
 
-## Protect scope, data, and credentials
+## Purpose
 
-- The installed worker may run with broad filesystem access, while approval remains on request and is handled by Codex auto-review. Treat access as execution capability, not blanket task authority: every assignment must name the allowed paths and mutations, and the worker must stop instead of expanding that scope.
-- Do not send secrets, private source, personal data, or regulated material unless the user has authorized the configured external provider and `deepseek-v4-flash` model data boundary.
-- Keep the parent and its provider independent from the child transport. Do not switch the parent provider or model to delegate.
-- Keep provider credentials in the provider environment. Never put credentials in the staged assignment, spawn message, or returned content.
+This skill turns a Sol-defined local move into one staged, spawned, returned, and integrated DeepSeek-backed `v4_flash_worker` job. Sol holds the task thread: user goal, Plan, decomposition, current stage, acceptance criteria, review, and the decision to advance. DeepSeek handles local moves through native `v4_flash_worker`.
 
-## Deliver one self-contained job
+The dispatch frame is:
 
-1. Build one complete assignment that states the child identity, objective, necessary context, scope or constraints, and desired output clearly enough to stand alone. Add allowed paths, permitted mutations, exclusions, available permissions, evidence, or a stopping condition only when the task needs them. Keep it in parent-owned execution state; do not publish it as user-visible commentary merely for transport.
-2. Pipe the assignment through stdin to the installed handoff script in `stage` mode. The platform state directory must already be covered by the parent session's writable roots; treat a missing persistent permission as installation drift instead of routinely discovering it through a failed stage. Use the standard installed path below. If the script is absent, inspect the effective `SubagentStart` Hook matching `^v4_flash_worker$` and use the same reviewed path with its mode changed from `hook` to `stage`:
-   - Windows: `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "<codex-home>\hooks\codex-deepseek-subagent\plaintext-handoff.ps1" -Mode stage`
-   - macOS/Linux: `python3 "<codex-home>/hooks/codex-deepseek-subagent/plaintext_handoff.py" --mode stage`
-3. Require a successful stage result naming `v4_flash_worker`. Treat a lock contender, an active pending or claimed item, quarantined state, or any other non-success result as a transport failure. Never spawn after a failed stage. Retry the complete stage only after the occupied state is explicitly clear, and spawn only after that new stage succeeds.
-4. Immediately create the child through Codex's native `spawn_agent` with the exact agent type `v4_flash_worker`, a unique task name, and `fork_turns="none"`. Do not replace this with a provider CLI, direct API call, or inherited root history. Keep all essential instructions in the staged assignment; let the spawn message only identify the trusted one-shot Hook.
-5. Use the native callback unless the result blocks the parent; then call `wait_agent(timeout_ms=3600000)` once. On timeout, check once, interrupt a still-running child, and report failure. Never poll, wait again, re-dispatch, duplicate work, or use another return transport.
-6. Verify the returned contribution in proportion to the parent claim, then integrate it in the parent context.
+1. Sol understands the goal and chooses the next stage.
+2. Sol assigns one or more DeepSeek jobs with self-contained instructions.
+3. DeepSeek completes the assigned local move and returns evidence or changes.
+4. Sol reviews the returned result, updates the task thread, and chooses the next stage.
 
-## Respect dispatch and delivery semantics
+This skill defines how one local move is prepared, staged, spawned, returned, and integrated.
 
-- Treat delivery as one-shot and at-most-once. Never assume a claimed assignment can be replayed or delivered to a replacement child.
-- After a worker has received its assignment, it no longer holds the dispatch lock; you may stage and spawn the next job before that worker returns, and already-running workers continue concurrently.
-- Require explicit resolution for malformed or quarantined state. Never delete, replace, or overwrite it automatically.
+## Assignment
 
-## Fail and continue safely
+DeepSeek receives the staged assignment as its working context, not the parent conversation. Write one self-contained local move: mode, objective, necessary context, scope, expected output, and return point. The mode names are assignment modes, not separate agents: use `ds_scout` for repository observation that returns evidence, and `ds_worker` for file changes, command execution, focused tests, or other accepted implementation stages.
 
-- Treat a missing Hook assignment, failed stage, unreadable child task, or absent callback as a transport failure. Do not silently substitute another provider, model, app, direct API call, CLI process, or inherited root history.
-- Multi-agent V1 is an explicit top-level session compatibility choice, not a per-spawn switch or silent fallback.
-- The staged assignment briefly exists as plaintext in local user state before dispatch to the configured external provider and `deepseek-v4-flash` model. The Hook is a transport compatibility layer, not a confidential channel.
+Describe the target state and job boundary; give exact commands or step order when the task depends on them, otherwise let DeepSeek choose the concrete path inside the assignment. DeepSeek returns evidence, changes, blockers, or a next-step recommendation. Sol verifies the returned contribution, updates the task thread, and decides the next assignment.
+
+## Dispatch And Return
+
+Stage the assignment through stdin with the installed plaintext handoff script in `stage` mode, require a successful result naming `v4_flash_worker`, then spawn native `v4_flash_worker` with a unique task name and `fork_turns="none"`. Keep essential task instructions in the staged assignment; the spawn message only identifies the trusted Hook handoff. Use the native callback; when the result blocks Sol, call `wait_agent(timeout_ms=3600000)` once.
+
+Standard stage commands:
+
+- Windows: `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "<codex-home>\hooks\codex-deepseek-subagent\plaintext-handoff.ps1" -Mode stage`
+- macOS/Linux: `python3 "<codex-home>/hooks/codex-deepseek-subagent/plaintext_handoff.py" --mode stage`
+
+If the script is absent, inspect the effective `SubagentStart` Hook matching `^v4_flash_worker$` and use the same reviewed path with its mode changed from `hook` to `stage`.
+
+Treat dispatch as one-shot delivery: stage succeeds before spawn, a claimed assignment is not replayed, and transport state is resolved before a fresh dispatch. Do not substitute another provider, model, CLI, inherited history, or Multi-agent V1 for this Hook path.
+
+The staged assignment briefly exists as plaintext in local user state before dispatch to the configured external provider and `deepseek-v4-flash` model. Keep credentials in the provider environment; keep secrets, unrelated history, private source beyond the job scope, personal data, and regulated material out of the assignment unless the user has authorized that data boundary. Filesystem access is execution capability; the assignment boundary defines task authority.
