@@ -20,7 +20,7 @@ description: Dispatch the DeepSeek-backed v4_flash_worker through the installed 
    - macOS/Linux: `python3 "<codex-home>/hooks/codex-deepseek-subagent/plaintext_handoff.py" --mode stage`
 3. Require a successful stage result naming `v4_flash_worker`. Treat a lock contender, an active pending or claimed item, quarantined state, or any other non-success result as a transport failure. Never spawn after a failed stage. Retry the complete stage only after the occupied state is explicitly clear, and spawn only after that new stage succeeds.
 4. Immediately create the child through Codex's native `spawn_agent` with the exact agent type `v4_flash_worker`, a unique task name, and `fork_turns="none"`. Do not replace this with a provider CLI, direct API call, or inherited root history. Keep all essential instructions in the staged assignment; let the spawn message only identify the trusted one-shot Hook.
-5. Receive the child through Codex's native wait/callback path. Use one task-sized idle wait or callback; do not short-poll, duplicate the child work, or invent another return transport while it runs.
+5. Use the native callback unless the result blocks the parent; then call `wait_agent(timeout_ms=3600000)` once. On timeout, check once, interrupt a still-running child, and report failure. Never poll, wait again, re-dispatch, duplicate work, or use another return transport.
 6. Verify the returned contribution in proportion to the parent claim, then integrate it in the parent context.
 
 ## Respect dispatch and delivery semantics

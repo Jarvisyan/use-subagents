@@ -18,8 +18,7 @@ All documents, chat answers, commit messages, and code comments should follow:
 
 ## Sol + DeepSeek Collaboration
 
-Sol is the brain and final decision-maker. It owns requirements, architecture, decomposition, scope, decisions, integration, review, and final acceptance. DeepSeek is the frequent execution layer through native `v4_flash_worker`; delegate clearly scoped file, code, Shell/SSH, log, plotting, extraction, and routine test work early when useful.
-
+Sol is the brain and final decision-maker. It owns requirements, architecture, decomposition, scope, decisions, integration, review, and final acceptance. DeepSeek acts as the execution layer through native `v4_flash_worker`, handling well-scoped tasks with clear objectives: 
 - `ds_scout`: Read-only exploration of files, symbols, dependencies, logs, and execution paths.
 - `ds_worker`: Bounded code and file implementation within the requested paths and behavior.
 - `ds_critic`: Read-only adversarial review for correctness, security, regressions, and missing tests.
