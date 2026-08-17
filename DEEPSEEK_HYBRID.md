@@ -360,3 +360,276 @@ CLI。
 8. 没有 follow-up、重试或替代传输。
 
 满足以上条件后，才可以认为设备完成了原生 DeepSeek 迁移。
+
+---
+
+# V1：Sol + Luna 默认执行层，外部模型作为备用
+
+> 状态：v1 agent 与 Skill 已安装，静态验收通过；新 App 顶层任务中的 native child smoke 待完成。
+> 版本关系：前文是已有的 Sol + DeepSeek v0 配置，保持不变；本章是在 v0 旁边增量安装的 v1。
+
+## 结论先行
+
+v1 保留 v0 的协作主线：Sol 持有用户目标、Plan、任务分解、验收标准、审查和集成权；subagent 只完成一个边界清楚的 local move。主要变化是执行后端：
+
+1. Luna Max 成为默认 subagent，通过 Codex 原生 spawn 直接接收 assignment；
+2. DeepSeek 保留为显式、低频的外部后端，继续使用 v0 的 plaintext Hook；
+3. scout 和 worker 仍是 assignment mode，不拆成两个 Luna agent；
+4. 任务角色与模型后端分离，以后新增其他外部 API 时不需修改 Sol 的上层协议。
+
+```text
+Sol
+  │
+  ├─ backend: luna（默认）
+  │    └─ native spawn: luna_worker, fork_turns="none"
+  │         └─ GPT-5.6 Luna, reasoning=max
+  │
+  └─ backend: deepseek（显式备用）
+       └─ stage → SubagentStart Hook → v4_flash_worker
+            └─ DeepSeek V4 Flash
+
+两条路径都通过 native callback 返回 Sol，由 Sol 审查并决定下一阶段。
+```
+
+## 一、为什么 v1 只使用一个 Luna TOML？
+
+两个 TOML 的主要优势是可以把 scout 强制设为 `read-only`，把 worker 设为可写。这是一种额外的安全改进，但不是 Luna 的技术要求，也不是 v0 的工作方式。
+
+v0 只有一个 `v4_flash_worker` agent：`ds_scout` 和 `ds_worker` 是 assignment 中的模式，并不对应两个物理 agent。为了让 v1 保持相同的心智模型和最小配置，v1 也只新增：
+
+```text
+<codex-home>/agents/luna-worker.toml
+```
+
+`scout` 和 `worker` 作为逻辑 mode：
+
+- `mode: scout`：只观察、定位和返回证据，assignment 必须明确禁止修改文件；
+- `mode: worker`：可以在 Sol 授权的 scope 内编辑、执行命令、测试或绘图。
+
+这和 v0 一样，依靠 Sol 写清 assignment boundary，而不是用两个沙箱强制分工。如果未来实际出现 scout 误写问题，可以在 v1.1 再增加独立的 `luna_scout`；它不应成为 v1 的前置复杂度。
+
+## 二、统一 assignment 协议
+
+### 2.1 字段的定义和归属
+
+Skill 定义字段的名称和语义，Sol 在每次决定委派时根据当前任务动态填入值。用户不需要逐项填表，agent TOML 也不保存这些任务数据。
+
+| 字段 | 归属 | 规则 |
+| --- | --- | --- |
+| `backend` | 用户策略 + Sol 路由 | 默认 `luna`；使用外部 API 时必须显式写 `deepseek` 或未来注册的其他后端 |
+| `mode` | Sol | 当前只有 `scout` 和 `worker` |
+| `objective` | Sol | 从当前 Plan 阶段提炼的单一 local move 目标 |
+| `necessary_context` | Sol | 只提供 child 完成本次任务所需的上下文，不复制无关父对话 |
+| `scope` | Sol | 允许读取或修改的文件、路径、系统和禁止边界 |
+| `expected_output` | Sol | 需要返回的证据、改动、测试结果、blocker 或建议 |
+| `return_point` | Sol | 本次 local move 的停止条件；完成后回报 Sol，不自行进入下一阶段 |
+
+### 2.2 示例
+
+用户只需提出原始目标，例如“调查这个测试为什么失败”。Sol 在决定委派后形成：
+
+```yaml
+backend: luna
+mode: scout
+objective: 定位指定测试失败的直接原因。
+necessary_context: 包含测试名称、当前错误信息和相关改动背景。
+scope: 只读检查该测试及真实调用路径；不修改文件。
+expected_output: 返回根因、文件或符号证据以及最小修复方向。
+return_point: 返回分析后停止，由 Sol 决定是否进入修复阶段。
+```
+
+`fork_turns="none"` 仍是默认。这不是让 child “没有任务”，而是不复制父对话；Sol 会把上述完整 assignment 直接放入 spawn message。
+
+### 2.3 统一回执
+
+Luna 和外部 worker 都应返回同一类信息，使 Sol 的集成逻辑不依赖 provider：
+
+```yaml
+status: completed | blocked
+summary: 本次 local move 的结论
+evidence: 决定性文件、符号、命令或数据
+changes: 修改的文件和行为，无改动时明确写 none
+verification: 已运行的测试或核验
+blockers: 未解决的必要输入或外部状态
+recommended_next_step: 供 Sol 决定的下一步建议
+```
+
+这是语义协议，不要为了形式一致强制 child 输出冗长 YAML。实际回执可以是简洁自然语言，但必须覆盖对当前 mode 有用的字段。
+
+## 三、Luna 运行时配置
+
+v1 已新增：
+
+```text
+/user/work/yanjie/.codex/agents/luna-worker.toml
+```
+
+实际已安装内容如下：
+
+```toml
+name = "luna_worker"
+
+description = "Fast native GPT-5.6 Luna execution worker for bounded file inspection and editing, code, shell/SSH, logs, plotting, extraction, and routine tests. Before spawning or continuing it, the parent should use $use-v4-flash-worker for the installed routing workflow. The parent decides whether to delegate and owns scope, context, effort, verification, continuation, and integration."
+
+developer_instructions = """
+Execute the assignment within the scope, permissions, and output contract supplied by the parent.
+Treat the parent's choices about context, tools, verification depth, reporting cadence, and stopping condition as authoritative.
+Do only the work needed for the assignment. Do not inspect unrelated workspace state, broaden the task, mutate files, or manage other agents unless the assignment explicitly requires it.
+If essential input is missing or the configured model cannot be used, report the blocker; never silently substitute another model, provider, application, or invocation path.
+Treat one explicit self-contained assignment addressed to luna_worker as the complete parent-supplied task contract. Do not continue unrelated root work or infer a task from surrounding history.
+For mode=scout, inspect and return evidence without modifying files. For mode=worker, modify only the authorized scope and run focused verification.
+Return in the requested form. If no form is specified, return the result with only decisive evidence and material caveats.
+"""
+
+model = "gpt-5.6-luna"
+model_reasoning_effort = "max"
+sandbox_mode = "danger-full-access"
+approval_policy = "on-request"
+approvals_reviewer = "auto_review"
+```
+
+### 3.1 为什么不设全局 Luna default？
+
+不在顶层 `config.toml` 中设置：
+
+```toml
+default_subagent_model = "gpt-5.6-luna"
+default_subagent_reasoning_effort = "max"
+```
+
+全局 default 会影响所有没有固定模型的内置或自定义 agent，超出“用 Luna 替换 DS 日常执行层”的范围。v1 在 `luna-worker.toml` 内固定模型和 `max`，再由 Skill 默认选择 `luna_worker`，可获得更精确的默认行为和更小的回退面。
+
+### 3.2 权限语义
+
+上述权限与 v0 的本机 worker 对齐，使单个 Luna agent 同时能处理检索、编辑、Shell/SSH、测试和落盘绘图。`mode: scout` 的只读边界由 assignment 和 `developer_instructions` 约束，不是独立沙箱。
+
+Codex 父任务当次的 live permission 或 sandbox override 仍可能覆盖 agent 文件中的默认权限。Sol 在派发 worker 前必须以当前任务的实际 permission mode 为准。
+
+## 四、Skill v1 路由设计
+
+Skill 源继续位于：
+
+```text
+/user/work/yanjie/tools/use-subagents/skill/use-v4-flash-worker/
+```
+
+v1 暂时保留 `$use-v4-flash-worker` 名称和现有路径，避免破坏 Codex home 中已安装的软链接、`v4_flash_worker` 的引用和 v0 回退通道。它的职责从“DeepSeek 传输 Skill”扩展为“Sol 与执行层的统一路由 Skill”，但仍保持当前的简短结构。
+
+### 4.1 Luna 默认分支
+
+1. Sol 形成完整 assignment；
+2. 选择 `luna_worker`；
+3. 使用 `fork_turns="none"`；
+4. 把完整 assignment 直接放入 spawn message；
+5. 使用 native callback 收集结果；
+6. Sol 审查返回贡献并决定下一阶段。
+
+Luna 分支不运行 stage，不读写 pending 状态，不依赖 Hook、外部 API key 或自定义 model catalog。
+
+### 4.2 DeepSeek 显式备用分支
+
+只有 assignment 显式选择 `backend: deepseek` 时，才使用前文 v0 协议：
+
+1. 通过已安装的 plaintext handoff 脚本 stage assignment；
+2. 确认成功结果命名 `v4_flash_worker`；
+3. 以 `fork_turns="none"` spawn 精确的 `v4_flash_worker`；
+4. Hook 消费 pending 并注入 assignment；
+5. DeepSeek 通过 native callback 返回 Sol。
+
+不允许 Sol 在 Luna 失败后静默将任务发送到外部 provider。使用 DeepSeek 必须是用户显式指定，或当前任务已有清晰的外部数据授权和路由策略。v0 的明文状态目录和外部数据边界仍完整适用。
+
+### 4.3 未来其他外部 API
+
+统一 assignment 协议不把 `backend` 限定为布尔值。未来增加其他外部模型时，每个后端只需提供：
+
+1. 唯一 backend 名称；
+2. 对应的 custom agent 和 provider/model 配置；
+3. 可审查的 assignment transport；
+4. 与统一回执语义对齐的 developer instructions；
+5. 独立的凭据、数据边界和 smoke oracle。
+
+Sol 的 Plan、mode、assignment 和验收逻辑不随 provider 改变。不要为尚未接入的 provider 提前实现一套泛化 Hook 框架；等第二个外部后端真正出现时，再从两个真实案例中抽取公共 transport。
+
+## 五、v0/v1 共存和回退
+
+v1 采用增量安装：
+
+| 工件 | v0 | v1 处置 |
+| --- | --- | --- |
+| `v4-flash-worker.toml` | DeepSeek agent | 保留不变 |
+| `hooks.json` 与 plaintext handoff | DeepSeek transport | 保留不变，只供显式 DeepSeek 任务使用 |
+| `models.json` 与 DeepSeek provider | 外部模型元数据 | 保留不变 |
+| `luna-worker.toml` | 不存在 | v1 唯一新增 agent |
+| `skill/use-v4-flash-worker/` | DeepSeek 传输协议 | 更新为 Luna 默认、DeepSeek 备用的路由协议 |
+| 本文档 | v0 原文 | 仅在末尾追加 v1，v0 既有行不变 |
+
+即时回退不需删除 Luna：Sol 可以显式使用 `backend: deepseek`。完整回退则是：
+
+1. 停止使用 `luna_worker`；
+2. 删除新增的 `luna-worker.toml`；
+3. 通过 Git 还原 Skill 的 v1 更新和本章追加；
+4. v0 的 agent、Hook、catalog 和凭据环境始终未被修改，可直接恢复旧工作流。
+
+实际执行删除前仍需要确认目标并遵守可恢复操作规则；本章不授权任何删除。
+
+## 六、实施阶段
+
+### 阶段 0：只记录设计（已完成）
+
+首先只追加本 v1 章节，确认单一 Luna agent、统一 assignment 和 v0/v1 共存边界。v0 文档保持原样。
+
+### 阶段 1：增量安装 Luna（已完成）
+
+1. 创建 `/user/work/yanjie/.codex/agents/luna-worker.toml`；
+2. 固定 `model = "gpt-5.6-luna"` 和 `model_reasoning_effort = "max"`；
+3. 保留 v0 的 `v4-flash-worker.toml`、Hook、catalog 和顶层 `config.toml`。
+
+### 阶段 2：更新统一 Skill（已完成）
+
+1. 保留 Sol → assignment → subagent → Sol 审查的四步工作流；
+2. 将默认分支改为 Luna native spawn；
+3. 将 v0 stage + Hook 压缩为显式 DeepSeek 备用分支；
+4. 同步更新 `agents/openai.yaml` 的描述和默认提示；
+5. 不把安装历史、长故障处理或未来 provider 框架塞入 Skill 主体。
+
+### 阶段 3：静态验收（已完成）
+
+1. 检查 TOML 可解析、Skill frontmatter 和安装软链接；
+2. 查看精确 diff，确认 v0 文档只有尾部追加；
+3. 确认 v0 运行时工件未被修改；
+4. 确认 Skill 的 Luna 默认分支和 DeepSeek 显式分支都有唯一路由。
+
+本机静态验收结果：
+
+- `luna-worker.toml` 通过 Python `tomllib` 解析，必填字段完整；
+- Codex bundled model catalog 包含 `gpt-5.6-luna`，并明确支持 `max`；
+- `/user/work/yanjie/.codex/skills/use-v4-flash-worker` 仍指向本仓库 Skill 源；
+- fresh `codex debug prompt-input` 已显示更新后的 Luna-default Skill description；
+- `git diff --check` 通过，v0 agent、Hook、catalog 和顶层 `config.toml` 未修改。
+
+### 阶段 4：新 App 顶层任务运行 smoke（待完成）
+
+使用全新顶层任务，必要时先重启 App，再验证：
+
+1. child 的 `agent_role=luna_worker`；
+2. provider/model 为 OpenAI / `gpt-5.6-luna`；
+3. `model_reasoning_effort=max` 实际生效；
+4. `mode: scout` 只返回证据，没有修改文件；
+5. `mode: worker` 只修改授权 scope 并运行聚焦验证；
+6. callback 返回 Sol，由 Sol 完成审查和集成；
+7. Luna 路径没有读写 plaintext handoff 状态。
+
+安装当前已存在的 App 任务保留启动时 agent-type 快照，直接 spawn 新角色会返回 `unknown agent_type 'luna_worker'`。`codex exec` 的非交互工具面又不暴露 `spawn_agent`，因此它不能替代 App 内的 native child smoke。这两个现象不作为 Luna 失败证据，也不冒充 smoke 成功；最终验收必须在新 App 顶层任务中看到真实 child ID 和 callback。
+
+DeepSeek 或其他外部 API 的付费 smoke 不随 Luna smoke 自动运行，必须获得用户单独授权。
+
+## 七、尚未执行的策略决定
+
+v1 运行必须的 agent 与 Skill 路径已经定义，但下列策略不在本阶段自动执行：
+
+1. 是否在 global AGENTS.md 增加“Sol 对边界明确的 local move 主动使用该 Skill”的触发规则；
+2. 是否对 Luna 的 `danger-full-access` / `on-request` / `auto_review` 组合进行进一步收紧；
+3. 是否在迁移稳定后把历史 Skill 名 `$use-v4-flash-worker` 另行迁移为更通用的名称；
+4. 是否在出现真实误写证据后，将 `luna_scout` 拆成独立的 read-only agent。
+
+在用户批准相应阶段之前，这些决定都保持为设计项，不改变 v0 的当前运行状态。

@@ -1,4 +1,4 @@
 interface:
   display_name: "Use V4 Flash Worker"
-  short_description: "Transport a native job to DeepSeek Flash"
-  default_prompt: "Use $use-v4-flash-worker to stage and dispatch this already-scoped task through the installed plaintext Hook."
+  short_description: "Dispatch bounded jobs to native Luna, with explicit DeepSeek fallback"
+  default_prompt: "Use $use-v4-flash-worker to dispatch this already-scoped task to native Luna by default, or through the installed plaintext Hook only when backend is explicitly deepseek."
