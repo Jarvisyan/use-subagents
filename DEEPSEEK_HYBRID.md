@@ -363,26 +363,30 @@ CLI。
 
 ---
 
-# V1：Sol + Luna 默认执行层，外部模型作为备用
+# V1：Sol + Luna 默认执行层，provider-aware transport
 
-> 状态：v1 agent 与 Skill 已安装，静态验收通过；新 App 顶层任务中的 native child smoke 待完成。
-> 版本关系：前文是已有的 Sol + DeepSeek v0 配置，保持不变；本章是在 v0 旁边增量安装的 v1。
+> 状态：v1 agent、provider-aware Hook 与 Skill 已安装，静态验收和全新 App Server 顶层任务中的 native child smoke 均已通过。
+> 版本关系：前文是已有的 Sol + DeepSeek v0 配置；本章是在 v0 旁边增量安装的 v1，并记录父任务切换到自定义 provider 后对 Luna transport 的补充。
 
 ## 结论先行
 
 v1 保留 v0 的协作主线：Sol 持有用户目标、Plan、任务分解、验收标准、审查和集成权；subagent 只完成一个边界清楚的 local move。主要变化是执行后端：
 
-1. Luna Max 成为默认 subagent，通过 Codex 原生 spawn 直接接收 assignment；
-2. DeepSeek 保留为显式、低频的外部后端，继续使用 v0 的 plaintext Hook；
-3. scout 和 worker 仍是 assignment mode，不拆成两个 Luna agent；
-4. 任务角色与模型后端分离，以后新增其他外部 API 时不需修改 Sol 的上层协议。
+1. Luna Max 成为默认 subagent，始终通过 Codex 原生 spawn、线程、工具循环和 callback 工作；
+2. 父任务使用内置 `openai` provider 时，Luna 直接接收 spawn message；使用 `ioz-lx` 等自定义 provider 时，先通过 one-shot plaintext Hook 补交同一份 assignment；
+3. DeepSeek 保留为显式、低频的外部后端，继续使用同一套 plaintext handoff；
+4. scout 和 worker 仍是 assignment mode，不拆成两个 Luna agent；
+5. 任务角色、模型后端与 assignment transport 分离，Sol 的上层协议不随 provider 改变。
 
 ```text
 Sol
   │
   ├─ backend: luna（默认）
-  │    └─ native spawn: luna_worker, fork_turns="none"
-  │         └─ GPT-5.6 Luna, reasoning=max
+  │    ├─ parent provider: openai
+  │    │    └─ native spawn: luna_worker, fork_turns="none"
+  │    └─ parent provider: custom（当前为 ioz-lx）
+  │         └─ stage → SubagentStart Hook → native luna_worker
+  │              └─ GPT-5.6 Luna, reasoning=max
   │
   └─ backend: deepseek（显式备用）
        └─ stage → SubagentStart Hook → v4_flash_worker
@@ -391,6 +395,8 @@ Sol
 两条路径都通过 native callback 返回 Sol，由 Sol 审查并决定下一阶段。
 ```
 
+这里的 Hook 不解密 `encrypted_content`。它把 Sol 已经拥有的完整 assignment 短暂写入本机权限受限的 one-shot 状态文件，再在 `SubagentStart` 时作为 `additionalContext` 注入同一个原生 child。Luna 的 provider/model、工具面、线程和 callback 都不变；新增的风险边界只是本机短暂存在的明文 assignment。
+
 ## 一、为什么 v1 只使用一个 Luna TOML？
 
 两个 TOML 的主要优势是可以把 scout 强制设为 `read-only`，把 worker 设为可写。这是一种额外的安全改进，但不是 Luna 的技术要求，也不是 v0 的工作方式。
@@ -398,7 +404,7 @@ Sol
 v0 只有一个 `v4_flash_worker` agent：`ds_scout` 和 `ds_worker` 是 assignment 中的模式，并不对应两个物理 agent。为了让 v1 保持相同的心智模型和最小配置，v1 也只新增：
 
 ```text
-<codex-home>/agents/luna-worker.toml
+/workspace/codes/codex-home/agents/luna-worker.toml
 ```
 
 `scout` 和 `worker` 作为逻辑 mode：
@@ -438,7 +444,7 @@ expected_output: 返回根因、文件或符号证据以及最小修复方向。
 return_point: 返回分析后停止，由 Sol 决定是否进入修复阶段。
 ```
 
-`fork_turns="none"` 仍是默认。这不是让 child “没有任务”，而是不复制父对话；Sol 会把上述完整 assignment 直接放入 spawn message。
+`fork_turns="none"` 仍是默认。这不是让 child “没有任务”，而是不复制父对话；Sol 会把上述完整 assignment 放入 spawn message。父任务使用自定义 provider 时，同一份 assignment 还会先进入 one-shot handoff，Hook 注入的副本是可靠载体。
 
 ### 2.3 统一回执
 
@@ -461,7 +467,7 @@ recommended_next_step: 供 Sol 决定的下一步建议
 v1 已新增：
 
 ```text
-/user/work/yanjie/.codex/agents/luna-worker.toml
+/workspace/codes/codex-home/agents/luna-worker.toml
 ```
 
 实际已安装内容如下：
@@ -510,7 +516,7 @@ Codex 父任务当次的 live permission 或 sandbox override 仍可能覆盖 ag
 Skill 源继续位于：
 
 ```text
-/user/work/yanjie/tools/use-subagents/skill/use-v4-flash-worker/
+/workspace/codes/tools/use-subagents/skill/use-v4-flash-worker/
 ```
 
 v1 暂时保留 `$use-v4-flash-worker` 名称和现有路径，避免破坏 Codex home 中已安装的软链接、`v4_flash_worker` 的引用和 v0 回退通道。它的职责从“DeepSeek 传输 Skill”扩展为“Sol 与执行层的统一路由 Skill”，但仍保持当前的简短结构。
@@ -518,13 +524,14 @@ v1 暂时保留 `$use-v4-flash-worker` 名称和现有路径，避免破坏 Code
 ### 4.1 Luna 默认分支
 
 1. Sol 形成完整 assignment；
-2. 选择 `luna_worker`；
-3. 使用 `fork_turns="none"`；
-4. 把完整 assignment 直接放入 spawn message；
-5. 使用 native callback 收集结果；
-6. Sol 审查返回贡献并决定下一阶段。
+2. 检查父任务实际生效的 `model_provider`；
+3. 若为内置 `openai`，直接选择 `luna_worker`；
+4. 若为自定义 provider，通过 stdin 以 `--agent-type luna_worker` stage assignment，并确认返回的 `agent_type`；
+5. 使用 `fork_turns="none"` spawn `luna_worker`，同时把完整 assignment 放入 spawn message；
+6. 自定义 provider 路径由 Hook 一次性消费 Luna pending 并注入 assignment；内置 provider 路径没有 pending，Hook 以 `--allow-missing` 正常 no-op；
+7. 使用 native callback 收集结果，由 Sol 审查并决定下一阶段。
 
-Luna 分支不运行 stage，不读写 pending 状态，不依赖 Hook、外部 API key 或自定义 model catalog。
+因此，“原生 Luna”描述的是 child 的执行链，不等于所有 provider 都能直接承载 collaboration ciphertext。内置 `openai` 路径不运行 stage；当前 `ioz-lx` 路径运行 `stage → Hook → native spawn`，只为 assignment 增加本机明文 side channel，不替换 Luna 或其原生交互。
 
 ### 4.2 DeepSeek 显式备用分支
 
@@ -538,7 +545,7 @@ Luna 分支不运行 stage，不读写 pending 状态，不依赖 Hook、外部 
 
 不允许 Sol 在 Luna 失败后静默将任务发送到外部 provider。使用 DeepSeek 必须是用户显式指定，或当前任务已有清晰的外部数据授权和路由策略。v0 的明文状态目录和外部数据边界仍完整适用。
 
-### 4.3 未来其他外部 API
+### 4.3 其他自定义 provider
 
 统一 assignment 协议不把 `backend` 限定为布尔值。未来增加其他外部模型时，每个后端只需提供：
 
@@ -548,7 +555,7 @@ Luna 分支不运行 stage，不读写 pending 状态，不依赖 Hook、外部 
 4. 与统一回执语义对齐的 developer instructions；
 5. 独立的凭据、数据边界和 smoke oracle。
 
-Sol 的 Plan、mode、assignment 和验收逻辑不随 provider 改变。不要为尚未接入的 provider 提前实现一套泛化 Hook 框架；等第二个外部后端真正出现时，再从两个真实案例中抽取公共 transport。
+Sol 的 Plan、mode、assignment 和验收逻辑不随 provider 改变。现在已有 DeepSeek child 和自定义 `ioz-lx` 上的 Luna 两个真实案例，因此 handoff 脚本已泛化为按 `agent_type` 隔离的 transport；新 provider 仍需先证明原生 collaboration payload 不可靠，不能仅因“可能需要”就默认启用明文 handoff。
 
 ## 五、v0/v1 共存和回退
 
@@ -557,7 +564,7 @@ v1 采用增量安装：
 | 工件 | v0 | v1 处置 |
 | --- | --- | --- |
 | `v4-flash-worker.toml` | DeepSeek agent | 保留不变 |
-| `hooks.json` 与 plaintext handoff | DeepSeek transport | 保留不变，只供显式 DeepSeek 任务使用 |
+| `hooks.json` 与 plaintext handoff | DeepSeek transport | 保留 DeepSeek matcher，并新增 provider-aware Luna matcher；两类 pending 按 `agent_type` 隔离 |
 | `models.json` 与 DeepSeek provider | 外部模型元数据 | 保留不变 |
 | `luna-worker.toml` | 不存在 | v1 唯一新增 agent |
 | `skill/use-v4-flash-worker/` | DeepSeek 传输协议 | 更新为 Luna 默认、DeepSeek 备用的路由协议 |
@@ -568,7 +575,7 @@ v1 采用增量安装：
 1. 停止使用 `luna_worker`；
 2. 删除新增的 `luna-worker.toml`；
 3. 通过 Git 还原 Skill 的 v1 更新和本章追加；
-4. v0 的 agent、Hook、catalog 和凭据环境始终未被修改，可直接恢复旧工作流。
+4. 恢复 handoff 脚本与 `hooks.json` 的 DeepSeek-only 版本，并移除对应 Luna Hook trust；v0 的 agent、catalog 和凭据环境可继续使用。
 
 实际执行删除前仍需要确认目标并遵守可恢复操作规则；本章不授权任何删除。
 
@@ -580,15 +587,15 @@ v1 采用增量安装：
 
 ### 阶段 1：增量安装 Luna（已完成）
 
-1. 创建 `/user/work/yanjie/.codex/agents/luna-worker.toml`；
+1. 创建 `/workspace/codes/codex-home/agents/luna-worker.toml`；
 2. 固定 `model = "gpt-5.6-luna"` 和 `model_reasoning_effort = "max"`；
-3. 保留 v0 的 `v4-flash-worker.toml`、Hook、catalog 和顶层 `config.toml`。
+3. 保留 v0 的 `v4-flash-worker.toml` 和 catalog；父任务切换到自定义 `ioz-lx` provider 后，扩展 Hook 与顶层 `config.toml` 的 Luna trust。
 
 ### 阶段 2：更新统一 Skill（已完成）
 
 1. 保留 Sol → assignment → subagent → Sol 审查的四步工作流；
-2. 将默认分支改为 Luna native spawn；
-3. 将 v0 stage + Hook 压缩为显式 DeepSeek 备用分支；
+2. 将默认分支改为 provider-aware Luna native spawn：内置 `openai` 直接传递，自定义 provider 使用 one-shot handoff；
+3. 将 v0 stage + Hook 保留为显式 DeepSeek 备用分支；
 4. 同步更新 `agents/openai.yaml` 的描述和默认提示；
 5. 不把安装历史、长故障处理或未来 provider 框架塞入 Skill 主体。
 
@@ -596,32 +603,45 @@ v1 采用增量安装：
 
 1. 检查 TOML 可解析、Skill frontmatter 和安装软链接；
 2. 查看精确 diff，确认 v0 文档只有尾部追加；
-3. 确认 v0 运行时工件未被修改；
+3. 确认 DeepSeek 默认行为和既有 matcher 未发生回归；
 4. 确认 Skill 的 Luna 默认分支和 DeepSeek 显式分支都有唯一路由。
 
 本机静态验收结果：
 
 - `luna-worker.toml` 通过 Python `tomllib` 解析，必填字段完整；
 - Codex bundled model catalog 包含 `gpt-5.6-luna`，并明确支持 `max`；
-- `/user/work/yanjie/.codex/skills/use-v4-flash-worker` 仍指向本仓库 Skill 源；
+- `/workspace/codes/codex-home/skills/use-v4-flash-worker` 仍指向本仓库 Skill 源；
 - fresh `codex debug prompt-input` 已显示更新后的 Luna-default Skill description；
-- `git diff --check` 通过，v0 agent、Hook、catalog 和顶层 `config.toml` 未修改。
+- handoff 脚本通过 Python 编译，DeepSeek 旧路径回归、Luna no-op 和 Luna stage→消费均通过；
+- `hooks/list` 显示 DeepSeek 与 Luna matcher 都是 enabled、trusted，且没有 warnings/errors；
+- Skill 快速验证器因当前环境缺少 PyYAML 未运行完成，手动结构检查通过。
 
-### 阶段 4：新 App 顶层任务运行 smoke（待完成）
+### 阶段 4：新 App 顶层任务运行 smoke（已完成）
 
 使用全新顶层任务，必要时先重启 App，再验证：
 
 1. child 的 `agent_role=luna_worker`；
-2. provider/model 为 OpenAI / `gpt-5.6-luna`；
+2. provider/model 为 `ioz-lx` / `gpt-5.6-luna`；
 3. `model_reasoning_effort=max` 实际生效；
 4. `mode: scout` 只返回证据，没有修改文件；
 5. `mode: worker` 只修改授权 scope 并运行聚焦验证；
 6. callback 返回 Sol，由 Sol 完成审查和集成；
-7. Luna 路径没有读写 plaintext handoff 状态。
+7. stage 返回 `agent_type=luna_worker`，pending 被 Hook 一次性消费，且 callback 原生返回父任务；
+8. child 收到唯一 marker，没有报告 assignment contract 缺失。
 
-安装当前已存在的 App 任务保留启动时 agent-type 快照，直接 spawn 新角色会返回 `unknown agent_type 'luna_worker'`。`codex exec` 的非交互工具面又不暴露 `spawn_agent`，因此它不能替代 App 内的 native child smoke。这两个现象不作为 Luna 失败证据，也不冒充 smoke 成功；最终验收必须在新 App 顶层任务中看到真实 child ID 和 callback。
+本机使用全新 App Server 顶层线程完成的实测结果：
 
-DeepSeek 或其他外部 API 的付费 smoke 不随 Luna smoke 自动运行，必须获得用户单独授权。
+- stage 返回 `handoff_id=9cc04660-00c6-46ad-bfab-4b2bdc996a21` 与 `agent_type=luna_worker`；
+- native child `/root/luna_plaintext_e2e_91d7` 返回 marker `LUNA_PLAINTEXT_E2E_91D7` 和准确的 `pwd` 输出 `/workspace/codes/Perturbdiff`；
+- child metadata 为 `agentRole=luna_worker`、`modelProvider=ioz-lx`、`model=gpt-5.6-luna`、`reasoningEffort=max`；
+- callback 原生返回父线程，结束后 Luna pending、claimed 和 failed 状态均不存在；
+- 没有 assignment-contract 缺失错误。
+
+该 smoke 的父线程特意设为 `ephemeral`，因此 child 已完成并 callback 后，stop hook 记录了一条 `failed to resolve parent transcript path ... no rollout found` 警告。它是测试夹具没有持久化父 rollout 所致，发生在 `SubagentStart` handoff 完成之后，不影响本次 transport 结论；正式 App 顶层任务使用持久线程。
+
+安装前已经存在的 App 任务会保留启动时 Hook 快照，不能用来验证新 matcher。`codex exec` 的非交互工具面又不暴露 `spawn_agent`，因此它不能替代 App 内的 native child smoke；必须使用修改后新建的顶层任务，必要时先完整重启 App。
+
+DeepSeek smoke 不随 Luna smoke 自动运行，必须获得用户单独授权。当前 `ioz-lx` Luna smoke 会产生一次很小的 API 调用。
 
 ## 七、尚未执行的策略决定
 
